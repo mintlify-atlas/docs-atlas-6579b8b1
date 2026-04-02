@@ -1,27 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "SPIRE",
+  "projectType": "infrastructure",
+  "projectName": "SPIRE",
+  "projectDescription": "SPIRE (SPIFFE Runtime Environment) is a production-ready toolchain implementing the SPIFFE standard for issuing cryptographic identities to workloads across heterogeneous infrastructure.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#17bed7",
-    "light": "#e4f1b9",
-    "dark": "#1c1c1c"
-  },
-  "logo": {
-    "light": "https://media.brand.dev/ebecbbbd-3f2f-4db4-bc3a-fdba71ba45e6.png",
-    "dark": "https://media.brand.dev/ebecbbbd-3f2f-4db4-bc3a-fdba71ba45e6.png"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/spiffe/spire"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/spiffe/spire"
-    }
-  },
+  "primaryColor": "#17bed7",
+  "lightColor": "#e4f1b9",
+  "darkColor": "#1c1c1c",
   "navigation": {
     "tabs": [
       {
@@ -95,5 +79,31 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Automatic SPIFFE ID issuance to workloads via X.509-SVIDs and JWT-SVIDs",
+    "Node attestation for AWS, GCP, Azure, Kubernetes, TPM, SSH, and more",
+    "Workload attestation via Kubernetes, Docker, Unix, and systemd",
+    "Pluggable upstream CA integration (Vault, AWS PCA, GCP CAS, cert-manager)",
+    "Federation across multiple trust domains",
+    "Nested SPIRE topology for multi-cloud deployments",
+    "High availability via shared datastore (PostgreSQL, MySQL)",
+    "Envoy SDS integration for transparent mTLS",
+    "Trust bundle publishing to S3, GCS, and Kubernetes ConfigMaps",
+    "CNCF graduated project with production security audits"
+  ],
+  "publicApiSurface": [
+    "SPIFFE Workload API (gRPC)",
+    "SPIRE Server API (gRPC)",
+    "spire-server entry create/update/delete/show",
+    "spire-server agent list/ban/evict",
+    "spire-server bundle show/set/refresh/list",
+    "spire-server token generate",
+    "spire-server federation create/refresh",
+    "spire-server jwt mint",
+    "spire-server x509 mint",
+    "spire-agent api fetch x509",
+    "spire-agent api fetch jwt",
+    "Delegated Identity API"
+  ]
 }

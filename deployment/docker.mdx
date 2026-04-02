@@ -1,0 +1,201 @@
+---
+title: "Docker deployment"
+description: "Run SPIRE Server and Agent using Docker or Docker Compose."
+keywords: ["docker", "container", "docker compose", "ghcr", "volume", "socket", "non-root"]
+---
+
+SPIRE's container images are published to the GitHub Container Registry and are suitable for local development, CI pipelines, and simple single-host deployments. For production multi-node deployments, consider the [Kubernetes deployment guide](/deployment/kubernetes).
+
+## Container images
+
+| Component | Image | Default user |
+|-----------|-------|--------------|
+| SPIRE Server | `ghcr.io/spiffe/spire-server` | `1000:1000` (non-root) |
+| SPIRE Agent | `ghcr.io/spiffe/spire-agent` | `0:0` (root) |
+| OIDC Discovery Provider | `ghcr.io/spiffe/oidc-discovery-provider` | `1000:1000` (non-root) |
+
+Images are built from scratch and contain only the SPIRE binary and CA certificates. They do not include a shell, package manager, or standard Linux utilities.
+
+<Note>
+  The SPIRE Agent image runs as root by default. This is intentional: the agent needs to share its Unix socket with workload containers via a `hostPath`-style bind mount, which requires root on the host. See [Running as non-root](#running-as-non-root) if you need to customize this.
+</Note>
+
+## Running SPIRE Server
+
+Mount a configuration file into the container and expose the server's gRPC port:
+
+```bash
+docker run \
+  --name spire-server \
+  --rm \
+  -p 8081:8081 \
+  -v /path/to/server.conf:/etc/spire/server/server.conf:ro \
+  -v spire-server-data:/var/lib/spire/server \
+  ghcr.io/spiffe/spire-server:1.10.0 \
+  -config /etc/spire/server/server.conf
+```
+
+A minimal `server.conf`:
+
+```hcl
+server {
+  bind_address = "0.0.0.0"
+  bind_port    = "8081"
+  trust_domain = "example.org"
+  data_dir     = "/var/lib/spire/server"
+  log_level    = "INFO"
+}
+
+plugins {
+  DataStore "sql" {
+    plugin_data {
+      database_type     = "sqlite3"
+      connection_string = "/var/lib/spire/server/datastore.sqlite3"
+    }
+  }
+
+  NodeAttestor "join_token" {
+    plugin_data {}
+  }
+
+  KeyManager "disk" {
+    plugin_data {
+      keys_path = "/var/lib/spire/server/keys.json"
+    }
+  }
+}
+```
+
+## Running SPIRE Agent
+
+The agent needs to reach the server (by name or IP) and share its socket directory with workloads on the same host:
+
+```bash
+docker run \
+  --name spire-agent \
+  --rm \
+  -v /path/to/agent.conf:/etc/spire/agent/agent.conf:ro \
+  -v spire-agent-data:/var/lib/spire/agent \
+  -v /run/spire/sockets:/run/spire/agent/public \
+  ghcr.io/spiffe/spire-agent:1.10.0 \
+  -config /etc/spire/agent/agent.conf
+```
+
+A minimal `agent.conf` using the join token attestor:
+
+```hcl
+agent {
+  data_dir       = "/var/lib/spire/agent"
+  log_level      = "INFO"
+  server_address = "spire-server"
+  server_port    = "8081"
+  socket_path    = "/run/spire/agent/public/api.sock"
+  trust_bundle_path = "/etc/spire/agent/bundle.crt"
+  trust_domain   = "example.org"
+}
+
+plugins {
+  NodeAttestor "join_token" {
+    plugin_data {}
+  }
+
+  KeyManager "disk" {
+    plugin_data {
+      directory = "/var/lib/spire/agent"
+    }
+  }
+
+  WorkloadAttestor "unix" {
+    plugin_data {}
+  }
+}
+```
+
+## Docker Compose
+
+Docker Compose is a convenient way to run a complete SPIRE setup locally. The [SPIRE 101](https://github.com/spiffe/spire/blob/main/doc/SPIRE101.md) tutorial uses Docker Compose and is a good starting point. Additional Docker Compose demos, including a federation example, are available in the [spire-tutorials](https://github.com/spiffe/spire-tutorials) repository.
+
+A minimal `compose.yaml` for a single server and agent:
+
+```yaml
+services:
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.10.0
+    command: ["-config", "/etc/spire/server/server.conf"]
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./server.conf:/etc/spire/server/server.conf:ro
+      - spire-server-data:/var/lib/spire/server
+      - spire-server-socket:/run/spire/server/private
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.10.0
+    command: ["-config", "/etc/spire/agent/agent.conf"]
+    depends_on:
+      - spire-server
+    volumes:
+      - ./agent.conf:/etc/spire/agent/agent.conf:ro
+      - spire-agent-data:/var/lib/spire/agent
+      - spire-agent-socket:/run/spire/agent/public
+      - spire-server-socket:/run/spire/server/private:ro
+
+volumes:
+  spire-server-data:
+  spire-server-socket:
+  spire-agent-data:
+  spire-agent-socket:
+```
+
+## Volume mounts and socket paths
+
+| Path | Component | Purpose |
+|------|-----------|---------|
+| `/etc/spire/server` | Server | Configuration directory |
+| `/var/lib/spire/server` | Server | Datastore and persistent data |
+| `/run/spire/server/private` | Server | Admin API socket |
+| `/etc/spire/agent` | Agent | Configuration directory |
+| `/var/lib/spire/agent` | Agent | Key material and cache |
+| `/run/spire/agent/public` | Agent | Workload API socket directory |
+
+<Tip>
+  Workloads access the Workload API at the agent socket path. Mount `/run/spire/agent/public` (or your configured `socket_path` directory) into workload containers so they can call the API.
+</Tip>
+
+## Running as non-root
+
+The SPIRE Server and OIDC Discovery Provider images are configured to run as uid `1000` / gid `1000` by default. The pre-built directories in the image (`/etc/spire/server`, `/run/spire/server/private`, `/var/lib/spire/server`) are owned by `1000:1000`, so no extra setup is needed as long as you use those paths.
+
+To run the server as a non-root user with the default paths:
+
+```bash
+docker run \
+  --user 1000:1000 \
+  -p 8081:8081 \
+  -v /path/to/server.conf:/etc/spire/server/server.conf:ro \
+  ghcr.io/spiffe/spire-server:1.10.0 \
+  -config /etc/spire/server/server.conf
+```
+
+<Warning>
+  If you use a custom data directory whose top-level component does not exist in the image (e.g., `/myspire/data`), the container will fail to start when running as non-root because only root can create directories at `/`. Either use the pre-created default paths or provide a bind mount for your custom path.
+</Warning>
+
+If you need a user other than uid `1000`, build a custom image based on the SPIRE release image and set the correct ownership at build time.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes deployment" icon="dharmachakra" href="/deployment/kubernetes">
+    Deploy SPIRE at scale with StatefulSet, DaemonSet, and Kubernetes PSAT attestation.
+  </Card>
+  <Card title="Scaling SPIRE" icon="chart-line" href="/deployment/scaling">
+    Add high availability with multiple server instances and a shared datastore.
+  </Card>
+  <Card title="Node attestors" icon="fingerprint" href="/plugins/node-attestors">
+    Choose the right node attestation method for your environment.
+  </Card>
+  <Card title="Server configuration" icon="sliders" href="/configuration/server">
+    Full reference for all SPIRE Server configuration options.
+  </Card>
+</CardGroup>

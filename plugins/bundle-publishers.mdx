@@ -1,0 +1,357 @@
+---
+title: "Bundle publishers"
+description: "Bundle publisher and notifier plugins automatically push the SPIRE trust bundle to external stores so that relying parties can fetch it without direct access to SPIRE Server."
+keywords: ["bundle publisher", "notifier", "trust bundle", "aws s3", "gcp cloud storage", "kubernetes configmap", "roles anywhere"]
+---
+
+SPIRE's trust bundle contains the root CA certificates that workloads use to verify each other's SVIDs. To allow relying parties outside the SPIRE deployment to consume the bundle — or to bootstrap new agents — SPIRE Server can automatically push the bundle to external stores using **BundlePublisher** and **Notifier** plugins.
+
+## BundlePublisher vs Notifier
+
+Both types push the trust bundle outward, but with different APIs:
+
+| Type | Format options | Use case |
+|------|---------------|----------|
+| `BundlePublisher` | SPIFFE, JWKS, PEM | Push the full trust bundle in a structured format to an object store |
+| `Notifier` | PEM (X.509 roots) | React to bundle change events; push root CA certificates to Kubernetes-native stores |
+
+Multiple BundlePublisher plugins can be active simultaneously. Only one Notifier of each name can be active.
+
+### Bundle formats
+
+All BundlePublisher plugins support these formats via the `format` option:
+
+| Format | Contents | Description |
+|--------|----------|-------------|
+| `spiffe` | X.509 + JWT authorities | RFC 7517 JWK Set with SPIFFE-specific parameters |
+| `jwks` | X.509 + JWT authorities | RFC 7517 JWK Set without SPIFFE-specific parameters |
+| `pem` | X.509 authorities only | PEM-encoded certificate bundle |
+
+---
+
+## BundlePublisher plugins
+
+<AccordionGroup>
+
+<Accordion title="aws_s3 — Amazon S3">
+
+The `aws_s3` plugin uploads the trust bundle to an S3 bucket and keeps it updated whenever the bundle changes.
+
+**Configuration**
+
+| Option | Description | Required | Default |
+|--------|-------------|----------|---------|
+| `region` | AWS region | Yes | — |
+| `bucket` | S3 bucket name | Yes | — |
+| `object_key` | Object key (path) within the bucket | Yes | — |
+| `format` | Bundle format: `spiffe`, `jwks`, or `pem` | Yes | — |
+| `access_key_id` | AWS access key ID | Only if `$AWS_ACCESS_KEY_ID` is unset | `$AWS_ACCESS_KEY_ID` |
+| `secret_access_key` | AWS secret access key | Only if `$AWS_SECRET_ACCESSKEY` is unset | `$AWS_SECRET_ACCESSKEY` |
+| `endpoint` | Custom S3 endpoint (for third-party providers) | No | — |
+| `refresh_hint` | Refresh hint duration for `spiffe` format (e.g. `10m`, `1h`) | No | — |
+
+Standard configuration using IAM role or environment credentials:
+
+```hcl
+BundlePublisher "aws_s3" {
+    plugin_data {
+        region     = "us-east-1"
+        bucket     = "spire-trust-bundle"
+        object_key = "example.org"
+        format     = "spiffe"
+    }
+}
+```
+
+Configuration for a third-party S3-compatible store (e.g. MinIO):
+
+```hcl
+BundlePublisher "aws_s3" {
+    plugin_data {
+        endpoint          = "https://minio.example.org"
+        region            = "minio-region"
+        access_key_id     = "minio-key-id"
+        secret_access_key = "minio-access-key"
+        bucket            = "spire-trust-bundle"
+        object_key        = "example.org"
+        format            = "spiffe"
+    }
+}
+```
+
+**Required IAM permission:** `s3:PutObject` on the target bucket.
+
+This plugin supports [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) on EKS. When IRSA is configured, omit `access_key_id` and `secret_access_key`.
+
+</Accordion>
+
+<Accordion title="gcp_cloudstorage — Google Cloud Storage">
+
+The `gcp_cloudstorage` plugin uploads the trust bundle to a GCS bucket and keeps it updated.
+
+**Configuration**
+
+| Option | Description | Required | Default |
+|--------|-------------|----------|---------|
+| `bucket_name` | GCS bucket name | Yes | — |
+| `object_name` | Object name within the bucket | Yes | — |
+| `format` | Bundle format: `spiffe`, `jwks`, or `pem` | Yes | — |
+| `service_account_file` | Path to a GCP service account credentials file | No | `$GOOGLE_APPLICATION_CREDENTIALS` |
+| `refresh_hint` | Refresh hint duration for `spiffe` format | No | — |
+
+Using Application Default Credentials:
+
+```hcl
+BundlePublisher "gcp_cloudstorage" {
+    plugin_data {
+        bucket_name = "spire-bundle"
+        object_name = "example.org"
+        format      = "spiffe"
+    }
+}
+```
+
+Using an explicit service account file:
+
+```hcl
+BundlePublisher "gcp_cloudstorage" {
+    plugin_data {
+        service_account_file = "/path/to/service-account.json"
+        bucket_name          = "spire-bundle"
+        object_name          = "example.org"
+        format               = "spiffe"
+    }
+}
+```
+
+**Required IAM permissions** on the target bucket:
+
+```
+storage.objects.create
+storage.objects.delete
+```
+
+</Accordion>
+
+<Accordion title="aws_rolesanywhere_trustanchor — AWS IAM Roles Anywhere">
+
+The `aws_rolesanywhere_trustanchor` plugin publishes the trust bundle to an [AWS IAM Roles Anywhere trust anchor](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/introduction.html), allowing AWS workloads to authenticate using SPIRE-issued X.509-SVIDs.
+
+**Configuration**
+
+| Option | Description | Required | Default |
+|--------|-------------|----------|---------|
+| `region` | AWS region | Yes | — |
+| `trust_anchor_id` | ID of the IAM Roles Anywhere trust anchor | Yes | — |
+| `access_key_id` | AWS access key ID | Only if not set in environment | `$AWS_ACCESS_KEY_ID` |
+| `secret_access_key` | AWS secret access key | Only if not set in environment | `$AWS_SECRET_ACCESS_KEY` |
+
+```hcl
+BundlePublisher "aws_rolesanywhere_trustanchor" {
+    plugin_data {
+        region          = "us-east-1"
+        trust_anchor_id = "153d3e58-cab5-4a59-a0a1-3febad2937c4"
+    }
+}
+```
+
+**Required IAM permission:** `rolesanywhere:UpdateTrustAnchor`.
+
+<Warning>
+AWS IAM Roles Anywhere allows at most two CAs per trust anchor. If the SPIRE trust bundle contains more than two CA certificates (which can happen during CA rotation), publishing will fail. Use an `UpstreamAuthority` plugin to limit the number of CAs in the bundle. Also note that expired CAs remain in the bundle for up to 24 hours after expiry.
+</Warning>
+
+</Accordion>
+
+<Accordion title="k8s_configmap — Kubernetes ConfigMap">
+
+The `k8s_configmap` plugin publishes the trust bundle to one or more Kubernetes ConfigMaps. It supports publishing to multiple clusters simultaneously.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `clusters` | Map of cluster configurations, keyed by an arbitrary cluster name |
+
+Each cluster entry:
+
+| Option | Description | Required |
+|--------|-------------|----------|
+| `configmap_name` | Name of the ConfigMap | Yes |
+| `configmap_key` | Key within the ConfigMap | Yes |
+| `namespace` | Namespace of the ConfigMap | Yes |
+| `format` | Bundle format: `spiffe`, `jwks`, or `pem` | Yes |
+| `kubeconfig_path` | Path to kubeconfig. Empty = in-cluster credentials. | No |
+| `refresh_hint` | Refresh hint duration for `spiffe` format | No |
+
+```hcl
+BundlePublisher "k8s_configmap" {
+    plugin_data {
+        clusters = {
+            "primary-cluster" = {
+                configmap_name  = "spire-bundle"
+                configmap_key   = "bundle.pem"
+                namespace       = "spire"
+                format          = "pem"
+            }
+            "remote-cluster" = {
+                configmap_name  = "spire-bundle"
+                configmap_key   = "bundle.pem"
+                namespace       = "spire"
+                kubeconfig_path = "/etc/spire/remote-cluster.kubeconfig"
+                format          = "pem"
+            }
+        }
+    }
+}
+```
+
+**Required Kubernetes permissions** for the SPIRE Server service account in each target namespace:
+
+```yaml
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "get", "patch"]
+  resourceNames: ["spire-bundle"]
+```
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+## Notifier plugins
+
+Notifiers react to bundle lifecycle events (loaded or updated) and push the X.509 root CA certificates from the trust bundle to a target store. They output PEM-encoded root certificates rather than the full structured bundle.
+
+<AccordionGroup>
+
+<Accordion title="k8sbundle — Kubernetes ConfigMap (notifier)">
+
+The `k8sbundle` notifier pushes the root CA certificates from the trust bundle into a Kubernetes ConfigMap. It can also update CA bundles in validating/mutating webhooks and API services, making it useful for automating certificate rotation in Kubernetes-native components.
+
+**Configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `namespace` | Namespace of the ConfigMap | `spire` |
+| `config_map` | ConfigMap name | `spire-bundle` |
+| `config_map_key` | Key within the ConfigMap | `bundle.crt` |
+| `kube_config_file_path` | Path to kubeconfig. Unset = in-cluster credentials. | — |
+| `webhook_label` | If set, update CA bundles in webhooks with this label set to `true` | — |
+| `api_service_label` | If set, update CA bundles in API services with this label set to `true` | — |
+| `clusters` | List of additional remote cluster configurations | — |
+
+In-cluster with default ConfigMap:
+
+```hcl
+Notifier "k8sbundle" {
+    plugin_data {
+    }
+}
+```
+
+Out-of-cluster with custom ConfigMap:
+
+```hcl
+Notifier "k8sbundle" {
+    plugin_data {
+        namespace              = "infra"
+        config_map             = "agents"
+        config_map_key         = "bootstrap.crt"
+        kube_config_file_path  = "/path/to/kubeconfig"
+    }
+}
+```
+
+With webhook and API service rotation:
+
+```hcl
+Notifier "k8sbundle" {
+    plugin_data {
+        webhook_label     = "spiffe.io/webhook"
+        api_service_label = "spiffe.io/api_service"
+    }
+}
+```
+
+Multi-cluster configuration:
+
+```hcl
+Notifier "k8sbundle" {
+    plugin_data {
+        namespace = "spire"
+        clusters = [
+            {
+                kube_config_file_path = "/cluster2/kubeconfig"
+            },
+            {
+                kube_config_file_path = "/cluster3/kubeconfig"
+            }
+        ]
+    }
+}
+```
+
+**Required Kubernetes permissions:**
+
+```yaml
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch"]
+```
+
+When using `webhook_label` or `api_service_label`, also add:
+
+```yaml
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  verbs: ["get", "list", "patch", "watch"]
+- apiGroups: ["apiregistration.k8s.io"]
+  resources: ["apiservices"]
+  verbs: ["get", "list", "patch", "watch"]
+```
+
+</Accordion>
+
+<Accordion title="gcs_bundle — Google Cloud Storage (notifier)">
+
+The `gcs_bundle` notifier pushes PEM-encoded root CA certificates to a GCS object whenever the trust bundle changes. The resulting object can be used to bootstrap SPIRE Agents.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `bucket` | GCS bucket name |
+| `object_path` | Path to the object within the bucket |
+| `service_account_file` | (Optional) Path to a GCP service account credentials file |
+
+Using Application Default Credentials:
+
+```hcl
+Notifier "gcs_bundle" {
+    plugin_data {
+        bucket      = "my-bucket"
+        object_path = "spire-bundle.pem"
+    }
+}
+```
+
+Using an explicit service account file:
+
+```hcl
+Notifier "gcs_bundle" {
+    plugin_data {
+        bucket               = "my-bucket"
+        object_path          = "spire-bundle.pem"
+        service_account_file = "/path/to/service-account.json"
+    }
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

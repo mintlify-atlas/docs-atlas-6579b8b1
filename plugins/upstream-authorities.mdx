@@ -1,0 +1,346 @@
+---
+title: "Upstream authorities"
+description: "Upstream authority plugins let SPIRE obtain intermediate signing certificates from an existing PKI, chaining SPIRE's trust into your organization's certificate hierarchy."
+keywords: ["upstream authority", "pki", "vault", "aws pca", "gcp cas", "cert-manager", "disk", "nested spire"]
+---
+
+By default, SPIRE Server acts as its own self-signed root CA. An **UpstreamAuthority** plugin changes this: instead of self-signing its CA certificate, SPIRE requests an intermediate signing certificate from an upstream authority. This chains SPIRE's trust into your organization's existing PKI without replacing it.
+
+Only one UpstreamAuthority can be active at a time.
+
+<Note>
+When no UpstreamAuthority is configured, SPIRE acts as a self-signed root CA. The trust bundle distributed to agents contains only SPIRE's own root certificate.
+</Note>
+
+## Available upstream authorities
+
+<AccordionGroup>
+
+<Accordion title="disk — CA credentials from disk">
+
+The `disk` plugin loads CA credentials from files on disk. It is the simplest UpstreamAuthority and is useful for testing or environments that already manage a file-based PKI.
+
+The plugin reloads credentials on every CSR request, enabling seamless CA rotation without restarting SPIRE Server.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `cert_file_path` | Path to the upstream CA certificate (PEM). When joining an existing PKI, this must be a chain up to the root. |
+| `key_file_path` | Path to the upstream CA private key (PEM). Supports EC (ASN.1 or PKCS8) and RSA (PKCS1 or PKCS8). |
+| `bundle_file_path` | Path to PEM-encoded root CA certificates. Required when `cert_file_path` is not self-signed. |
+
+Self-signed root CA:
+
+```hcl
+UpstreamAuthority "disk" {
+    plugin_data {
+        cert_file_path = "/opt/spire/conf/upstream-ca.crt"
+        key_file_path  = "/opt/spire/conf/upstream-ca.key"
+    }
+}
+```
+
+Joining an existing PKI:
+
+```hcl
+UpstreamAuthority "disk" {
+    plugin_data {
+        cert_file_path   = "/opt/spire/conf/chain.pem"
+        key_file_path    = "/opt/spire/conf/signing.key"
+        bundle_file_path = "/opt/spire/conf/root-ca.pem"
+    }
+}
+```
+
+</Accordion>
+
+<Accordion title="aws_pca — AWS Certificate Manager Private CA">
+
+The `aws_pca` plugin uses [AWS Certificate Manager Private CA](https://aws.amazon.com/certificate-manager/private-certificate-authority/) to sign SPIRE's intermediate CA certificates. AWS PCA manages the root CA and its key; SPIRE only submits CSRs.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `region` | AWS region where the PCA is located |
+| `certificate_authority_arn` | ARN of the upstream ACM PCA certificate authority |
+| `ca_signing_template_arn` | (Optional) ARN of the signing template. Defaults to an end-entity template. |
+| `signing_algorithm` | (Optional) Signing algorithm (e.g. `SHA256WITHECDSA`). Defaults to the CA's default. |
+| `assume_role_arn` | (Optional) ARN of an IAM role to assume |
+| `endpoint` | (Optional) Custom endpoint URI for the ACM PCA API |
+| `supplemental_bundle_path` | (Optional) Path to additional PEM-encoded CA certificates to include in the trust bundle |
+
+```hcl
+UpstreamAuthority "aws_pca" {
+    plugin_data {
+        region                    = "us-west-2"
+        certificate_authority_arn = "arn:aws:acm-pca:us-west-2:123456789012:certificate-authority/12ac02bc-d425-49f7-ab78-570a44972772"
+        ca_signing_template_arn   = "arn:aws:acm-pca:::template/SubordinateCACertificate_PathLen0/V1"
+        signing_algorithm         = "SHA256WITHECDSA"
+    }
+}
+```
+
+**Required IAM permissions**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "acm-pca:DescribeCertificateAuthority",
+                "acm-pca:IssueCertificate",
+                "acm-pca:GetCertificate"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+<Note>
+ACM Private CAs cannot have their private key rotated while keeping the same ARN. If you change the signing CA, you must restart SPIRE Server. Use a persisting server key manager (e.g. `disk` or `aws_kms`) to preserve existing intermediate certificates across restarts.
+</Note>
+
+</Accordion>
+
+<Accordion title="awssecret — CA credentials from AWS Secrets Manager">
+
+The `awssecret` plugin loads CA credentials stored in [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/), then uses them to sign SPIRE intermediate CA certificates. This is suitable when you want to centrally manage CA material in AWS but do not use ACM PCA.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `region` | AWS region of the Secrets Manager instance |
+| `cert_file_arn` | ARN of the CA certificate secret |
+| `key_file_arn` | ARN of the CA private key secret |
+| `bundle_file_arn` | (Optional) ARN of root CA certificates to include in the trust bundle |
+| `access_key_id` | AWS access key ID |
+| `secret_access_key` | AWS secret access key |
+| `secret_token` | AWS session token (for temporary credentials) |
+| `assume_role_arn` | ARN of an IAM role to assume |
+
+```hcl
+UpstreamAuthority "awssecret" {
+    plugin_data {
+        region            = "us-west-2"
+        cert_file_arn     = "arn:aws:secretsmanager:us-west-2:123456789012:secret:spire-ca-cert"
+        key_file_arn      = "arn:aws:secretsmanager:us-west-2:123456789012:secret:spire-ca-key"
+        bundle_file_arn   = "arn:aws:secretsmanager:us-west-2:123456789012:secret:spire-root-bundle"
+    }
+}
+```
+
+<Warning>
+The plugin fetches secrets only at startup. Rotating secrets in AWS Secrets Manager does not automatically update the plugin. A SPIRE Server restart is required to pick up rotated credentials.
+</Warning>
+
+</Accordion>
+
+<Accordion title="gcp_cas — GCP Certificate Authority Service">
+
+The `gcp_cas` plugin uses [Google Cloud Certificate Authority Service](https://cloud.google.com/certificate-authority-service) to sign SPIRE intermediate CA certificates. The plugin selects the signing CA from a CA pool using label-based filtering.
+
+**Configuration**
+
+The plugin requires a `root_cert_spec` block to identify the CA pool and select the signing CA:
+
+| Option | Description |
+|--------|-------------|
+| `project_name` | GCP project containing the CA pool |
+| `region_name` | GCP region of the CA pool |
+| `ca_pool` | Name of the CA pool |
+| `label_key` | Label key to filter CAs in the pool |
+| `label_value` | Label value to filter CAs in the pool |
+
+```hcl
+UpstreamAuthority "gcp_cas" {
+    plugin_data {
+        root_cert_spec {
+            project_name = "my-project"
+            region_name  = "us-central1"
+            ca_pool      = "spire-ca-pool"
+            label_key    = "spire-ca"
+            label_value  = "true"
+        }
+    }
+}
+```
+
+Authentication uses [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials). Set `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file, or run SPIRE Server on a GCP resource with an attached service account.
+
+Among all matching CAs in the pool, the plugin selects the one with the earliest expiry time for signing. All matching CA root certificates are included in the trust bundle.
+
+</Accordion>
+
+<Accordion title="vault — HashiCorp Vault PKI">
+
+The `vault` plugin uses the [Vault PKI Secrets Engine](https://developer.hashicorp.com/vault/docs/secrets/pki) to sign SPIRE intermediate CA certificates. Vault manages the root CA; SPIRE submits CSRs to Vault's `sign-intermediate` endpoint.
+
+**Configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `vault_addr` | Vault server URL | `$VAULT_ADDR` |
+| `namespace` | Vault namespace (Vault Enterprise only) | `$VAULT_NAMESPACE` |
+| `pki_mount_point` | Mount point of the PKI secrets engine | `pki` |
+| `ca_cert_path` | Path to CA certificate to verify the Vault server TLS certificate | `$VAULT_CACERT` |
+| `insecure_skip_verify` | Skip Vault server TLS verification | `false` |
+| `cert_auth` | Client certificate authentication configuration | — |
+| `token_auth` | Token authentication configuration | — |
+| `approle_auth` | AppRole authentication configuration | — |
+| `k8s_auth` | Kubernetes authentication configuration | — |
+
+**Required Vault policy**
+
+```hcl
+path "pki/root/sign-intermediate" {
+    capabilities = ["update"]
+}
+```
+
+Token authentication (simplest):
+
+```hcl
+UpstreamAuthority "vault" {
+    plugin_data {
+        vault_addr      = "https://vault.example.org/"
+        pki_mount_point = "pki"
+        token_auth {
+            token = "s.yourVaultToken"
+        }
+    }
+}
+```
+
+AppRole authentication:
+
+```hcl
+UpstreamAuthority "vault" {
+    plugin_data {
+        vault_addr      = "https://vault.example.org/"
+        pki_mount_point = "pki"
+        ca_cert_path    = "/path/to/vault-ca.pem"
+        approle_auth {
+            approle_auth_mount_point = "approle"
+            approle_id               = "your-role-id"
+            approle_secret_id        = "your-secret-id"
+        }
+    }
+}
+```
+
+Kubernetes authentication:
+
+```hcl
+UpstreamAuthority "vault" {
+    plugin_data {
+        vault_addr      = "https://vault.example.org/"
+        pki_mount_point = "pki"
+        k8s_auth {
+            k8s_auth_role_name = "spire-server"
+            token_path         = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        }
+    }
+}
+```
+
+Client certificate authentication:
+
+```hcl
+UpstreamAuthority "vault" {
+    plugin_data {
+        vault_addr      = "https://vault.example.org/"
+        pki_mount_point = "pki"
+        ca_cert_path    = "/path/to/ca-cert.pem"
+        cert_auth {
+            client_cert_path = "/path/to/client-cert.pem"
+            client_key_path  = "/path/to/client-key.pem"
+        }
+    }
+}
+```
+
+<Note>
+The Vault PKI engine's max lease TTL should be greater than or equal to SPIRE Server's `ca_ttl`. Tune with: `vault secrets tune -max-lease-ttl=8760h pki`
+</Note>
+
+</Accordion>
+
+<Accordion title="spire — Nested SPIRE topology">
+
+The `spire` plugin connects a downstream SPIRE Server to an upstream SPIRE Server in the same trust domain. The downstream server fetches its intermediate signing certificate via the upstream server's Workload API. This enables hierarchical (nested) SPIRE deployments where a central SPIRE server delegates authority to regional or cluster-level servers.
+
+SVIDs minted at any level of the hierarchy are valid throughout the entire trust domain.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `server_address` | IP or DNS name of the upstream SPIRE Server |
+| `server_port` | Port of the upstream SPIRE Server |
+| `workload_api_socket` | Path to the SPIRE Agent Workload API socket (Unix) |
+
+Unix:
+
+```hcl
+UpstreamAuthority "spire" {
+    plugin_data {
+        server_address      = "upstream-spire-server"
+        server_port         = "8081"
+        workload_api_socket = "/tmp/spire-agent/public/api.sock"
+    }
+}
+```
+
+Windows:
+
+```hcl
+UpstreamAuthority "spire" {
+    plugin_data {
+        server_address = "upstream-spire-server"
+        server_port    = "8081"
+        experimental {
+            workload_api_named_pipe_name = "\\spire-agent\\public\\api"
+        }
+    }
+}
+```
+
+</Accordion>
+
+<Accordion title="cert-manager — Kubernetes cert-manager">
+
+The `cert-manager` plugin uses a [cert-manager](https://cert-manager.io) issuer running in Kubernetes to provide intermediate signing certificates. SPIRE submits a `CertificateRequest` resource to cert-manager, which the configured issuer signs.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `kube_config_file` | (Optional) Path to kubeconfig. Empty = in-cluster config. |
+| `namespace` | Namespace in which to create `CertificateRequest` resources |
+| `issuer_name` | Name of the cert-manager issuer |
+| `issuer_kind` | Kind of the issuer (e.g. `Issuer`, `ClusterIssuer`) | Defaults to `Issuer` |
+| `issuer_group` | API group of the issuer | Defaults to `cert-manager.io` |
+
+```hcl
+UpstreamAuthority "cert-manager" {
+    plugin_data {
+        issuer_name      = "spire-ca"
+        issuer_kind      = "Issuer"
+        issuer_group     = "cert-manager.io"
+        namespace        = "spire"
+        kube_config_file = "/etc/spire/kubeconfig"
+    }
+}
+```
+
+The Kubernetes identity used must have `create` permissions for `CertificateRequest` resources in the configured namespace.
+
+</Accordion>
+
+</AccordionGroup>

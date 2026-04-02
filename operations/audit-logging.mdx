@@ -1,0 +1,124 @@
+---
+title: "Audit Logging"
+description: "How to enable and interpret SPIRE Server audit logs, including field definitions and example entries."
+keywords: ["audit log", "audit_log_enabled", "logging", "security", "compliance", "uds", "tls"]
+---
+
+SPIRE Server can emit an audit log entry for every API request it receives. Audit logs share the same output destination as regular logs and are formatted as JSON, making them straightforward to ingest into a SIEM or log aggregation system.
+
+## Enabling audit logging
+
+Set `audit_log_enabled = true` in the `server` block of your SPIRE Server configuration file:
+
+```hcl
+server {
+  trust_domain        = "example.org"
+  audit_log_enabled   = true
+}
+```
+
+The default value is `false`. No restart of the log collector is required; SPIRE writes audit entries directly to its configured log output.
+
+## Log entry fields
+
+Every audit entry contains a common set of fields alongside any endpoint-specific fields.
+
+### Common fields
+
+| Field | Description | Values |
+|---|---|---|
+| `type` | Identifies the entry as an audit log entry. | `audit` |
+| `request_id` | UUID identifying the call. Batch operations emit one entry per item, all sharing the same `request_id`. | UUID string |
+| `status` | Whether the call succeeded. | `success`, `error` |
+| `status_code` | gRPC status code, present only when `status` is `error`. | gRPC status code string |
+| `status_message` | Error detail returned to the caller, present only when `status` is `error`. | string |
+
+### Caller identification on UDS endpoints
+
+When a client connects over the Unix Domain Socket (UDS), SPIRE identifies the caller by inspecting the process that opened the socket.
+
+| Field | Description |
+|---|---|
+| `caller_uid` | Caller's Unix user ID. |
+| `caller_gid` | Caller's Unix group ID. |
+| `caller_path` | Filesystem path to the caller's binary. |
+
+<Note>
+  When running SPIRE Server in Kubernetes, audit logging for UDS endpoint calls requires `hostPID: true` on the SPIRE Server pod spec. Without `hostPID`, the kernel cannot resolve the caller's process information across PID namespaces.
+</Note>
+
+### Caller identification on TLS endpoints
+
+When a client connects over a TLS port, SPIRE identifies the caller from the mutual TLS handshake.
+
+| Field | Description |
+|---|---|
+| `caller_addr` | Caller's IP address. |
+| `caller_id` | SPIFFE ID extracted from the X.509 certificate presented by the caller. |
+
+## Example log entries
+
+### Successful UDS call
+
+```json
+{
+  "level": "info",
+  "msg": "audit",
+  "time": "2024-01-15T10:23:45Z",
+  "type": "audit",
+  "request_id": "a3f2c1d0-1234-5678-abcd-ef0123456789",
+  "status": "success",
+  "caller_uid": 1000,
+  "caller_gid": 1000,
+  "caller_path": "/usr/local/bin/spire-server"
+}
+```
+
+### Failed TLS call
+
+```json
+{
+  "level": "info",
+  "msg": "audit",
+  "time": "2024-01-15T10:24:01Z",
+  "type": "audit",
+  "request_id": "b4e3d2c1-abcd-ef01-2345-678901234567",
+  "status": "error",
+  "status_code": "PermissionDenied",
+  "status_message": "caller is not an admin",
+  "caller_addr": "10.0.1.42:51234",
+  "caller_id": "spiffe://example.org/agent/node-1"
+}
+```
+
+## Kubernetes deployment considerations
+
+<Steps>
+  <Step title="Set hostPID on the SPIRE Server pod">
+    Add `hostPID: true` to the SPIRE Server pod spec so that the kernel can resolve UDS caller identities across PID namespaces.
+
+    ```yaml
+    spec:
+      hostPID: true
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:latest
+    ```
+  </Step>
+  <Step title="Configure audit logging in the server config">
+    Enable audit logging in the SPIRE Server ConfigMap or configuration file.
+
+    ```hcl
+    server {
+      audit_log_enabled = true
+    }
+    ```
+  </Step>
+  <Step title="Verify entries are appearing">
+    Tail the SPIRE Server logs and confirm you see entries with `"type": "audit"` after making an API call.
+
+    ```bash
+    kubectl logs -n spire deployment/spire-server | grep '"type":"audit"'
+    ```
+  </Step>
+</Steps>

@@ -1,0 +1,102 @@
+---
+title: "Security"
+description: "SPIRE's security model, third-party audits, vulnerability reporting, and operational best practices."
+keywords: ["security", "audit", "svid", "ttl", "key manager", "admin ids", "vulnerability"]
+---
+
+SPIRE is a [CNCF graduated project](https://www.cncf.io/projects/spire/) that implements the SPIFFE standard for workload identity. Its security model is built on mutual attestation: both agents and workloads must prove their identity before receiving credentials, and those credentials carry short lifetimes to limit the blast radius of any compromise.
+
+## Security assessments
+
+Third parties have independently reviewed SPIRE's design and implementation on multiple occasions.
+
+<CardGroup cols={2}>
+  <Card title="Cure53 Audit (2021)" icon="shield-halved">
+    A third-party security firm completed a full audit of SPIFFE and SPIRE in February 2021. The report is available as [`doc/cure53-report.pdf`](https://github.com/spiffe/spire/blob/main/doc/cure53-report.pdf) in the SPIRE repository.
+  </Card>
+  <Card title="CNCF TAG-Security Assessments (2018 & 2020)" icon="shield">
+    The CNCF Technical Advisory Group for Security conducted two assessments of SPIFFE and SPIRE, including a full threat model exercise. Summaries and the full self-assessment are published in the [cncf/sig-security](https://github.com/cncf/sig-security/tree/main/community/assessments/projects/spiffe-spire) repository.
+  </Card>
+</CardGroup>
+
+## Reporting vulnerabilities
+
+If you discover a vulnerability or a potential vulnerability in SPIRE, report it to the maintainers at **security@spiffe.io**. You will receive a confirmation email acknowledging your report and a follow-up when the issue has been confirmed or ruled out.
+
+The project supports security releases for the current minor release series and the previous one. For example, if the current release is v1.5, security fixes will be backported to both the v1.4 and v1.5 series.
+
+## Supported versions
+
+Security fixes are provided for the current and previous minor release series. For example, if the current release is v1.5, both the v1.4 and v1.5 series receive security patches. Older versions are not supported.
+
+## Best practices
+
+### Use short SVID TTLs
+
+SVIDs are the credentials that SPIRE issues to workloads. A shorter TTL means a compromised credential is only usable for a brief window before it expires and is rotated out.
+
+The server's default X.509 SVID TTL is 1 hour and the default JWT-SVID TTL is 5 minutes. For production workloads, evaluate whether these defaults fit your threat model. You can override the TTL per registration entry using the `-x509SVIDTTL` or `-jwtSVIDTTL` flags on `spire-server entry create`.
+
+```hcl
+server {
+  default_x509_svid_ttl = "1h"
+  default_jwt_svid_ttl  = "5m"
+}
+```
+
+### Restrict admin IDs
+
+The `admin_ids` server configuration option grants any caller presenting a matching X.509-SVID full administrative access to the SPIRE Server API. Use this option sparingly and only for identities that genuinely require privileged access.
+
+```hcl
+server {
+  admin_ids = [
+    "spiffe://example.org/admin/ops-tool",
+  ]
+}
+```
+
+Admin IDs must belong to the server's trust domain or a federated trust domain. They do not need a corresponding registration entry.
+
+### Enable audit logging
+
+Audit logging records every API call made to the SPIRE Server, including who made it and whether it succeeded. Enable it in production to support forensic investigation and compliance requirements.
+
+```hcl
+server {
+  audit_log_enabled = true
+}
+```
+
+See [Audit Logging](/operations/audit-logging) for field definitions and example entries.
+
+### Restrict network access to the server API
+
+The SPIRE Server listens on a TCP port (default 8081) for agent and administrative connections. This port should be firewalled so that only authorised clients—SPIRE Agents and administrators—can reach it. Agents access the server over mTLS using their SVID, so unauthenticated network access provides limited value to an attacker, but reducing the attack surface is still good practice.
+
+For server-to-server federation endpoints (default port 8443), similarly restrict access to the trust domains you intend to federate with.
+
+### Use hardware key managers in production
+
+By default, SPIRE Server uses an in-memory key manager that does not persist keys across restarts. For production deployments, use a hardware-backed or managed key store so that the signing key material is protected and auditable.
+
+<CardGroup cols={2}>
+  <Card title="AWS KMS" icon="key" href="/plugins/key-managers">
+    Manages server signing keys in AWS Key Management Service.
+  </Card>
+  <Card title="Azure Key Vault" icon="key" href="/plugins/key-managers">
+    Manages server signing keys in Azure Key Vault.
+  </Card>
+  <Card title="GCP Cloud KMS" icon="key" href="/plugins/key-managers">
+    Manages server signing keys in Google Cloud KMS.
+  </Card>
+  <Card title="TPM DevID (agent)" icon="microchip" href="/plugins/node-attestors">
+    Attests agent identity using a hardware TPM.
+  </Card>
+</CardGroup>
+
+On the agent side, the disk key manager persists agent private keys to disk. For stronger guarantees, pair node attestation with a hardware TPM using the `tpm_devid` node attestor.
+
+<Warning>
+  The `insecure_bootstrap` agent configuration option causes the agent to connect to the SPIRE Server without verifying its identity. This leaves the agent vulnerable to man-in-the-middle attacks and **must not be used in production**. It exists only for development and testing convenience.
+</Warning>

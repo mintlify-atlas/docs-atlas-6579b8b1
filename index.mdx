@@ -1,97 +1,71 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "SPIRE Documentation"
+description: "The SPIFFE Runtime Environment — production-grade workload identity for distributed systems."
 ---
 
-## Setting up
+SPIRE (SPIFFE Runtime Environment) is a CNCF-graduated toolchain that automatically issues and rotates cryptographic identities to workloads across any infrastructure. It implements the [SPIFFE standard](https://spiffe.io) for establishing trust between services without secrets, passwords, or manual certificate management.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get a SPIRE Server and Agent running and issue your first SVID in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Core Concepts" icon="book" href="/concepts">
+    Understand SPIFFE IDs, SVIDs, trust domains, attestation, and how SPIRE components work together.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Deployment Guide" icon="server" href="/deployment/installation">
+    Deploy SPIRE on Linux, Kubernetes, or Docker with production HA guidance.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Plugin Reference" icon="plug" href="/plugins/overview">
+    Extend SPIRE with node attestors, workload attestors, upstream CAs, and more.
   </Card>
-</Columns>
+  <Card title="Server CLI" icon="terminal" href="/reference/server-cli">
+    Full reference for every `spire-server` command and subcommand.
+  </Card>
+  <Card title="Workload API" icon="code" href="/reference/workload-api">
+    Fetch X.509-SVIDs and JWT-SVIDs from the SPIFFE Workload API.
+  </Card>
+</CardGroup>
 
-## Create beautiful pages
+## How SPIRE works
 
-Everything you need to create world-class documentation.
+<Steps>
+  <Step title="Deploy SPIRE Server">
+    The SPIRE Server is the root of trust for a trust domain. It manages registration entries, issues SVIDs, and maintains the trust bundle. Deploy a single server or a highly available cluster backed by a shared database.
+  </Step>
+  <Step title="Deploy SPIRE Agents">
+    A SPIRE Agent runs on every node where workloads need an identity. The agent attests itself to the server using a node attestor plugin (AWS IID, GCP IIT, Kubernetes PSAT, join token, and more), then caches SVIDs for local workloads.
+  </Step>
+  <Step title="Register workload entries">
+    Create registration entries on the server that map a SPIFFE ID to a set of workload selectors — Kubernetes pod labels, Unix UIDs, Docker image IDs, etc. The agent uses these to identify workloads at runtime.
+  </Step>
+  <Step title="Workloads call the Workload API">
+    Workloads call the SPIFFE Workload API (served by the agent over a Unix socket) to receive their X.509-SVID or JWT-SVID. SVIDs are automatically rotated before expiry — no restarts required.
+  </Step>
+</Steps>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Key capabilities
 
-## Need inspiration?
+<CardGroup cols={3}>
+  <Card title="Zero-trust identity" icon="shield-check">
+    Every workload gets a cryptographic SPIFFE ID backed by a short-lived X.509 certificate or JWT — no shared secrets.
+  </Card>
+  <Card title="Multi-platform attestation" icon="cloud">
+    Attest nodes on AWS, GCP, Azure, Kubernetes, bare metal (TPM, SSH, x509pop), and more via pluggable attestors.
+  </Card>
+  <Card title="Automatic rotation" icon="rotate">
+    SVIDs and CA certificates are rotated continuously. Workloads receive updates via the streaming Workload API — no downtime.
+  </Card>
+  <Card title="Federation" icon="diagram-project">
+    Federate multiple SPIRE deployments across organizations and cloud providers, enabling cross-domain mTLS without shared CAs.
+  </Card>
+  <Card title="Upstream CA integration" icon="certificate">
+    Chain SPIRE into your existing PKI — HashiCorp Vault, AWS Private CA, GCP CAS, cert-manager, and more.
+  </Card>
+  <Card title="Envoy SDS" icon="network-wired">
+    Integrate with Envoy's Secret Discovery Service to transparently deliver mTLS certificates to your service mesh.
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Note>
+  SPIRE is a [graduated project](https://www.cncf.io/projects/spire/) of the Cloud Native Computing Foundation (CNCF). It has undergone independent security audits and is deployed in production at scale by organizations worldwide.
+</Note>

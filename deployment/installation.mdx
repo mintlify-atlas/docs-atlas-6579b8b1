@@ -1,0 +1,155 @@
+---
+title: "Installation"
+description: "Install SPIRE Server and Agent on Linux, macOS, or via container images."
+keywords: ["installation", "binary", "container", "source", "linux", "macos", "windows", "ghcr"]
+---
+
+SPIRE ships as statically linked binaries with no runtime dependencies. You can install it from a pre-built release, pull a container image, or build from source.
+
+## Prerequisites
+
+- **Linux** (amd64, arm64, s390x): fully supported for production use.
+- **macOS**: supported for building from source and local development only. No pre-built binaries are published for macOS.
+- **Windows**: experimental support. Binaries are published but production use is not recommended.
+
+## Install methods
+
+<Tabs>
+  <Tab title="Binary">
+    Download the latest release tarball from the [SPIRE releases page](https://github.com/spiffe/spire/releases). Each release contains both the `spire-server` and `spire-agent` binaries.
+
+    <Steps>
+      <Step title="Download the release tarball">
+        Replace `1.10.0` with the version you want to install.
+
+        ```bash
+        curl -Lo spire.tar.gz \
+          https://github.com/spiffe/spire/releases/download/v1.10.0/spire-1.10.0-linux-amd64-musl.tar.gz
+        ```
+      </Step>
+      <Step title="Extract the archive">
+        ```bash
+        tar -xzf spire.tar.gz
+        ```
+
+        This produces a directory like `spire-1.10.0/` containing:
+
+        ```
+        spire-1.10.0/
+        ├── bin/
+        │   ├── spire-server
+        │   └── spire-agent
+        └── conf/
+            ├── server/
+            │   └── server.conf
+            └── agent/
+                └── agent.conf
+        ```
+      </Step>
+      <Step title="Move binaries into your PATH">
+        ```bash
+        sudo install -o root -g root -m 0755 \
+          spire-1.10.0/bin/spire-server \
+          spire-1.10.0/bin/spire-agent \
+          /usr/local/bin/
+        ```
+      </Step>
+      <Step title="Verify the installation">
+        ```bash
+        spire-server --version
+        spire-agent --version
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Container">
+    Container images are published to the GitHub Container Registry (ghcr.io) for every release. Three images are available:
+
+    | Image | Registry path |
+    |-------|---------------|
+    | SPIRE Server | `ghcr.io/spiffe/spire-server` |
+    | SPIRE Agent | `ghcr.io/spiffe/spire-agent` |
+    | OIDC Discovery Provider | `ghcr.io/spiffe/oidc-discovery-provider` |
+
+    Pull a specific version:
+
+    ```bash
+    docker pull ghcr.io/spiffe/spire-server:1.10.0
+    docker pull ghcr.io/spiffe/spire-agent:1.10.0
+    docker pull ghcr.io/spiffe/oidc-discovery-provider:1.10.0
+    ```
+
+    <Note>
+      The images are built from scratch and contain only the SPIRE binary and CA certificates. They do not include a shell or standard Linux utilities. See the [Docker deployment guide](/deployment/docker) for usage details.
+    </Note>
+  </Tab>
+  <Tab title="Source">
+    Building SPIRE from source requires Go 1.21 or later. macOS users must build from source — no pre-built binaries are available.
+
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/spiffe/spire.git
+        cd spire
+        ```
+      </Step>
+      <Step title="Build the binaries">
+        ```bash
+        make build
+        ```
+
+        The compiled binaries are written to `bin/`:
+
+        ```
+        bin/
+        ├── spire-server
+        └── spire-agent
+        ```
+      </Step>
+      <Step title="(Optional) Build static binaries">
+        Static binaries have no libc dependency and can be used in scratch-based containers:
+
+        ```bash
+        make build-static
+        ```
+
+        Output is placed in `bin/static/`.
+      </Step>
+    </Steps>
+
+    <Tip>
+      See [CONTRIBUTING.md](https://github.com/spiffe/spire/blob/main/CONTRIBUTING.md) for the full build and test workflow.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Platform support
+
+| Platform | Pre-built binaries | Container images | Production use |
+|----------|--------------------|------------------|----------------|
+| Linux (amd64) | Yes | Yes | Yes |
+| Linux (arm64) | Yes | Yes | Yes |
+| Linux (s390x) | Yes | Yes | Yes |
+| macOS | No | No | Build only |
+| Windows | Yes (experimental) | No | Experimental |
+
+<Warning>
+  The macOS and Windows builds are intended for development and testing. Run production workloads on Linux.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Kubernetes deployment" icon="dharmachakra" href="/deployment/kubernetes">
+    Deploy SPIRE Server as a StatefulSet and SPIRE Agent as a DaemonSet.
+  </Card>
+  <Card title="Docker deployment" icon="docker" href="/deployment/docker">
+    Run SPIRE Server and Agent using Docker or Docker Compose.
+  </Card>
+  <Card title="Server configuration" icon="sliders" href="/configuration/server">
+    Configure trust domains, datastores, and plugins for SPIRE Server.
+  </Card>
+  <Card title="Agent configuration" icon="sliders" href="/configuration/agent">
+    Configure node attestation, workload attestation, and key management.
+  </Card>
+</CardGroup>

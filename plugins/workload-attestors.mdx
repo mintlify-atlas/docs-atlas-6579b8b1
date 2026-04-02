@@ -1,0 +1,240 @@
+---
+title: "Workload attestors"
+description: "Workload attestors run in the SPIRE Agent and determine the identity of workloads requesting SVIDs. Each attestor inspects the calling process and produces a set of selectors used to match registration entries."
+keywords: ["workload attestation", "selectors", "kubernetes", "docker", "unix", "systemd", "windows"]
+---
+
+When a workload calls the SPIRE Agent's Workload API to request an SVID, the agent must first determine who the workload is. It does this through workload attestation: a set of configured workload attestors each inspect the calling process and produce a list of **selectors** — key-value pairs that describe properties of the workload.
+
+These selectors are matched against registration entries in SPIRE Server. An SVID is issued only when a workload's selectors satisfy a registration entry.
+
+Multiple workload attestors can be active simultaneously. The full set of selectors from all attestors is combined when matching.
+
+<Note>
+Workload attestors run exclusively in the SPIRE Agent; there is no server-side component.
+</Note>
+
+## Available workload attestors
+
+<AccordionGroup>
+
+<Accordion title="k8s — Kubernetes">
+
+The `k8s` attestor retrieves the workload's pod ID from its cgroup membership, then queries the kubelet for pod metadata. It can communicate with the kubelet over the insecure read-only port or the secure port with certificate or bearer-token authentication.
+
+**Configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `kubelet_read_only_port` | Use the kubelet read-only port. Mutually exclusive with `kubelet_secure_port`. | — |
+| `kubelet_secure_port` | Use the kubelet secure port | `10250` (unless `kubelet_read_only_port` is set) |
+| `kubelet_ca_path` | CA certificate file to verify the kubelet TLS certificate | `/run/secrets/kubernetes.io/serviceaccount/ca.crt` |
+| `skip_kubelet_verification` | Skip kubelet certificate verification | `false` |
+| `token_path` | Path to the bearer token for kubelet authentication | `/run/secrets/kubernetes.io/serviceaccount/token` |
+| `certificate_path` | Path to client certificate for kubelet authentication | — |
+| `private_key_path` | Path to client private key for kubelet authentication | — |
+| `use_anonymous_authentication` | Use anonymous authentication (not recommended for production) | `false` |
+| `node_name_env` | Environment variable containing the node name | `MY_NODE_NAME` |
+| `node_name` | Node name (overrides `node_name_env`) | — |
+| `disable_container_selectors` | Suppress container-level selectors, producing only pod-level selectors | `false` |
+| `use_new_container_locator` | Enable the cgroups v2-compatible container locator | `true` |
+| `verbose_container_locator_logs` | Log detailed cgroup and mountinfo information | `false` |
+
+Using the read-only kubelet port (simpler, but no authentication):
+
+```hcl
+WorkloadAttestor "k8s" {
+    plugin_data {
+        kubelet_read_only_port = 10255
+    }
+}
+```
+
+Using the secure kubelet port with default service account token (recommended):
+
+```hcl
+WorkloadAttestor "k8s" {
+    plugin_data {
+    }
+}
+```
+
+Using the secure kubelet port with an X.509 client certificate:
+
+```hcl
+WorkloadAttestor "k8s" {
+    plugin_data {
+        kubelet_ca_path      = "/path/to/kubelet-ca.pem"
+        certificate_path     = "/path/to/client-cert.pem"
+        private_key_path     = "/path/to/client-key.pem"
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Description |
+|----------|-------------|
+| `k8s:ns` | The workload's Kubernetes namespace |
+| `k8s:sa` | The workload's service account |
+| `k8s:pod-name` | The pod name |
+| `k8s:pod-uid` | The pod UID |
+| `k8s:pod-label` | A label on the pod (e.g. `k8s:pod-label:app:frontend`) |
+| `k8s:pod-owner` | The name of the pod's owner (e.g. a Deployment or ReplicaSet) |
+| `k8s:pod-owner-uid` | The UID of the pod owner |
+| `k8s:pod-image` | An image tag or digest of any container in the pod |
+| `k8s:pod-image-count` | Number of container images in the pod |
+| `k8s:pod-init-image` | An image tag or digest of any init container in the pod |
+| `k8s:pod-init-image-count` | Number of init container images |
+| `k8s:container-name` | The name of the specific container contacting SPIRE |
+| `k8s:container-image` | The image tag or digest of the specific container contacting SPIRE |
+| `k8s:node-name` | The name of the node running the workload |
+
+<Note>
+`k8s:container-image` and `k8s:container-name` match only against the specific container contacting the SPIRE Agent. `k8s:pod-image` matches against any container in the pod.
+</Note>
+
+**Platform support:** Linux only (requires Unix domain sockets). Kubernetes v1.24+ and containerd v1.6+ are required for Windows HostProcess containers.
+
+</Accordion>
+
+<Accordion title="docker — Docker">
+
+The `docker` attestor identifies workloads by their Docker container properties. It connects to the Docker daemon to retrieve container metadata for the calling process.
+
+**Configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `docker_socket_path` | Path to the Docker daemon socket | `/var/run/docker.sock` |
+| `docker_version` | Docker client API version | negotiated automatically |
+| `container_id_cgroup_matchers` | List of patterns to extract the container ID from cgroup entries | — |
+
+```hcl
+WorkloadAttestor "docker" {
+    plugin_data {
+        docker_socket_path = "/var/run/docker.sock"
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Description |
+|----------|-------------|
+| `docker:label` | A Docker container label (e.g. `docker:label:com.example.app:frontend`) |
+| `docker:image_id` | The container image ID |
+| `docker:env` | An environment variable set on the container |
+
+**Platform support:** Linux and macOS.
+
+</Accordion>
+
+<Accordion title="unix — Unix process attributes">
+
+The `unix` attestor generates selectors based on the operating system identity of the calling process. It is the simplest attestor and works on any POSIX system.
+
+**Configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `discover_workload_path` | Discover the workload binary path for additional selectors | `false` |
+| `workload_size_limit` | Maximum binary size (bytes) for SHA-256 computation. `0` = no limit, negative = never compute hash | `0` |
+
+```hcl
+WorkloadAttestor "unix" {
+    plugin_data {
+    }
+}
+```
+
+To enable binary path and hash selectors:
+
+```hcl
+WorkloadAttestor "unix" {
+    plugin_data {
+        discover_workload_path = true
+        workload_size_limit    = 104857600
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `unix:uid` | `unix:uid:1000` | Process user ID |
+| `unix:user` | `unix:user:nginx` | Process user name |
+| `unix:gid` | `unix:gid:1000` | Process group ID |
+| `unix:group` | `unix:group:www-data` | Process group name |
+| `unix:supplementary_gid` | `unix:supplementary_gid:2000` | Supplementary group ID (Linux only) |
+| `unix:supplementary_group` | `unix:supplementary_group:docker` | Supplementary group name (Linux only) |
+
+Additional selectors when `discover_workload_path = true`:
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `unix:path` | `unix:path:/usr/bin/nginx` | Path to the workload binary |
+| `unix:sha256` | `unix:sha256:3a6eb079...` | SHA-256 of the workload binary |
+
+<Warning>
+`discover_workload_path = true` requires the SPIRE Agent to have read access to `/proc/<pid>/exe` (or equivalent). On Linux this typically means running the agent as root or as the same user as the workload.
+</Warning>
+
+**Platform support:** POSIX systems only.
+
+</Accordion>
+
+<Accordion title="systemd — systemd unit properties">
+
+The `systemd` attestor generates selectors based on the systemd unit that manages the calling process. It uses the D-Bus API to query the systemd manager for unit properties.
+
+**Configuration**
+
+This plugin has no configuration options.
+
+```hcl
+WorkloadAttestor "systemd" {
+    plugin_data {
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Description |
+|----------|-------------|
+| `systemd:id` | The systemd unit ID (e.g. `systemd:id:nginx.service`) |
+| `systemd:fragment-path` | Path to the unit file (e.g. `systemd:fragment-path:/lib/systemd/system/nginx.service`) |
+
+**Platform support:** Linux only (requires D-Bus and systemd).
+
+</Accordion>
+
+<Accordion title="windows — Windows process attributes">
+
+The `windows` attestor generates selectors for workloads running on Windows, based on the security attributes of the calling process.
+
+**Configuration**
+
+This plugin has no configuration options.
+
+```hcl
+WorkloadAttestor "windows" {
+    plugin_data {
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Description |
+|----------|-------------|
+| `windows:user_sid` | The SID of the user running the process |
+| `windows:user_name` | The name of the user running the process |
+
+**Platform support:** Windows only.
+
+</Accordion>
+
+</AccordionGroup>

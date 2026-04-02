@@ -1,0 +1,184 @@
+---
+title: "Managing upgrades"
+description: "Version skew policy, rolling upgrade procedure, and downgrade steps for SPIRE Server and Agent."
+keywords: ["upgrade", "downgrade", "version skew", "rolling upgrade", "compatibility", "minor version", "patch version"]
+---
+
+SPIRE supports rolling upgrades with zero downtime when you have more than one server in the cluster. This guide covers the version compatibility guarantees and the recommended upgrade sequence.
+
+## Versioning
+
+SPIRE follows Semantic Versioning: `x.y.z` where `x` is the major version, `y` is the minor version, and `z` is the patch version.
+
+<Note>
+  The last pre-1.0 release series (0.12.x) is an exception: it carries compatibility guarantees with 1.0.x. Versions prior to 0.12.0 are not compatible with 1.0.x or later.
+</Note>
+
+## Version skew policy
+
+### Server-to-server skew
+
+All SPIRE Server instances in a cluster must be within **±1 minor version** of each other. You cannot mix versions that differ by two or more minor versions.
+
+| Newest server | Supported versions for other servers |
+|---------------|--------------------------------------|
+| 1.2.x | 1.2.x and 1.1.x |
+| 1.3.x | 1.3.x and 1.2.x |
+| 1.0.x | 1.0.x and 0.12.x (exception) |
+
+### Agent-to-server skew
+
+SPIRE Agents must **not be newer** than the oldest SPIRE Server they communicate with. Agents may be up to one minor version older than the oldest server.
+
+| Server versions in cluster | Supported agent versions |
+|----------------------------|--------------------------|
+| 1.2.3 and 1.2.2 | 1.1.0 through 1.2.2 |
+| 1.0.3 and 1.0.2 | 0.12.0 through 1.0.2 (exception) |
+
+<Warning>
+  Running an agent that is newer than any server in its cluster is unsupported and may result in connection failures or undefined behavior.
+</Warning>
+
+### Plugin compatibility
+
+Built-in plugins follow the same versioning guarantees as other SPIRE components. When a plugin undergoes a backwards-incompatible change (configuration shape, selector semantics, etc.), SPIRE logs a warning and maintains backwards compatibility for one minor version release cycle.
+
+External plugins compiled against an older interface continue to function for one minor version after a breaking interface change is introduced. SPIRE logs warnings to help operators identify plugins that need updating.
+
+<Note>
+  SPIRE cannot make compatibility guarantees for external plugins that are outside its direct control.
+</Note>
+
+## Upgrade procedure
+
+Upgrades must jump **at most one minor version** at a time. To upgrade from 1.1.x to 1.3.x, you must first upgrade to 1.2.x, verify stability, and then upgrade to 1.3.x.
+
+The required order is: **upgrade servers first, then agents**.
+
+<Steps>
+  <Step title="Upgrade SPIRE Server instances (one at a time)">
+    Update each server instance to the new version in a rolling fashion, waiting for each instance to rejoin the cluster before proceeding to the next.
+
+    For a Kubernetes StatefulSet, update the image tag and apply the manifest:
+
+    ```bash
+    kubectl set image statefulset/spire-server \
+      spire-server=ghcr.io/spiffe/spire-server:1.2.3 \
+      -n spire
+    ```
+
+    For a binary deployment, stop the server process, replace the binary, and restart:
+
+    ```bash
+    # On each server node, one at a time:
+    systemctl stop spire-server
+    install -o root -g root -m 0755 spire-server-1.2.3 /usr/local/bin/spire-server
+    systemctl start spire-server
+    ```
+  </Step>
+  <Step title="Verify the server cluster is healthy">
+    Before upgrading agents, confirm all server instances are running and healthy:
+
+    ```bash
+    spire-server healthcheck -socketPath /tmp/spire-server/private/api.sock
+    ```
+
+    Check that all servers appear in the cluster and are at the expected version before continuing. Verify your workload issuance is operating normally.
+  </Step>
+  <Step title="Upgrade SPIRE Agent instances">
+    Upgrade agents one at a time or in small batches. Agents automatically reconnect to the server cluster after restarting; workloads experience a brief interruption in Workload API availability on the affected node during the restart.
+
+    For a Kubernetes DaemonSet:
+
+    ```bash
+    kubectl set image daemonset/spire-agent \
+      spire-agent=ghcr.io/spiffe/spire-agent:1.2.3 \
+      -n spire
+    ```
+
+    For a binary deployment:
+
+    ```bash
+    # On each agent node, one at a time (or in batches):
+    systemctl stop spire-agent
+    install -o root -g root -m 0755 spire-agent-1.2.3 /usr/local/bin/spire-agent
+    systemctl start spire-agent
+    ```
+  </Step>
+  <Step title="Verify agent health">
+    After upgrading each agent, confirm it has re-attested and is issuing SVIDs to workloads:
+
+    ```bash
+    spire-agent healthcheck -socketPath /tmp/spire-agent/public/api.sock
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  Zero-downtime server upgrades require more than one SPIRE Server instance in the cluster. If you only run a single server, expect a brief outage for agents and workloads while the server restarts.
+</Tip>
+
+## Upgrade example
+
+Upgrading a cluster from 1.1.1 to 1.2.3:
+
+```text
+Step 1: Upgrade servers  1.1.1 → 1.2.3  (one instance at a time)
+Step 2: Verify server cluster health
+Step 3: Upgrade agents   1.1.1 → 1.2.3  (one at a time or in batches)
+Step 4: Verify agent health
+```
+
+## Downgrade procedure
+
+If you encounter a problem after upgrading, downgrade in the **reverse order**: agents first, then servers.
+
+<Steps>
+  <Step title="Downgrade SPIRE Agent instances">
+    Downgrade agents before downgrading servers. An agent must not be newer than the oldest server it communicates with, so agents must be rolled back before you lower the server version.
+
+    ```bash
+    # For each agent node, one at a time or in batches:
+    systemctl stop spire-agent
+    install -o root -g root -m 0755 spire-agent-1.1.1 /usr/local/bin/spire-agent
+    systemctl start spire-agent
+    ```
+  </Step>
+  <Step title="Downgrade SPIRE Server instances">
+    After all agents are at the lower version, downgrade servers one at a time:
+
+    ```bash
+    # For each server node, one at a time:
+    systemctl stop spire-server
+    install -o root -g root -m 0755 spire-server-1.1.1 /usr/local/bin/spire-server
+    systemctl start spire-server
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  To make downgrading easier, verify that the upgraded SPIRE Servers are operating correctly before upgrading agents. If a problem is detected at the server level, you can roll back servers immediately without needing to touch the agents.
+</Tip>
+
+## Experimental features
+
+Certain SPIRE features are marked as experimental and enabled via the `experimental` section of the configuration. Experimental features may change behavior, configuration shape, or be removed between releases. The version skew and upgrade compatibility guarantees described above **do not apply** to experimental features.
+
+Treat experimental features as unstable — do not rely on them in production environments where upgrade stability is required.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Scaling SPIRE" icon="chart-line" href="/deployment/scaling">
+    Add server replicas for zero-downtime upgrades and high availability.
+  </Card>
+  <Card title="Installation" icon="download" href="/deployment/installation">
+    Download pre-built binaries or container images for the new version.
+  </Card>
+  <Card title="Server CLI" icon="terminal" href="/reference/server-cli">
+    Use the healthcheck command to verify server and agent status.
+  </Card>
+  <Card title="Security operations" icon="shield-check" href="/operations/security">
+    Review security considerations when upgrading across minor versions.
+  </Card>
+</CardGroup>

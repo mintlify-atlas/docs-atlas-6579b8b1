@@ -1,0 +1,235 @@
+---
+title: "SPIRE Server API"
+description: "Reference for the SPIRE Server's gRPC API — consumed by the spire-server CLI and authorized administrative clients."
+---
+
+The SPIRE Server exposes a gRPC API over a Unix domain socket (default: `/tmp/spire-server/private/api.sock`). This API is the foundation for all `spire-server` CLI commands and can also be used directly by authorized administrative clients.
+
+<Note>
+  The Server API is not intended for workload consumption. Workloads should use the [SPIFFE Workload API](/reference/workload-api) served by the SPIRE Agent instead. The Server API socket is private by design — it requires access to a privileged socket path.
+</Note>
+
+---
+
+## Socket path
+
+| Platform | Default socket path |
+|----------|-------------------|
+| Linux / macOS | `/tmp/spire-server/private/api.sock` |
+| Windows (named pipe) | `\\spire-server\private\api` |
+
+Override with the `socket_path` configuration option:
+
+```hcl
+server {
+    socket_path = "/tmp/spire-server/private/api.sock"
+}
+```
+
+Or with the `-socketPath` flag on any `spire-server` subcommand:
+
+```bash
+spire-server agent list -socketPath /custom/path/api.sock
+```
+
+---
+
+## API groups
+
+The server API is organized into the following gRPC service groups. Each service is consumed via the corresponding `spire-server` CLI subcommand group.
+
+<AccordionGroup>
+  <Accordion title="Agent API">
+    Manages attested nodes (agents). Corresponds to `spire-server agent` CLI commands.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `CountAgents` | Returns the total number of attested agents |
+    | `ListAgents` | Returns a filtered, optionally paginated list of agents |
+    | `GetAgent` | Returns the agent associated with a given SPIFFE ID |
+    | `DeleteAgent` | Removes (evicts) an agent |
+    | `BanAgent` | Bans an agent, preventing re-attestation |
+    | `AttestAgent` | Attests a new agent (called by the agent during bootstrap) |
+    | `RenewAgent` | Renews the SVID of an existing agent |
+    | `CreateJoinToken` | Creates a join token for bootstrapping a new agent |
+
+    The `ListAgents` RPC supports filtering by SPIFFE ID, selector, expiry time, attestation type, re-attestation ability, and ban status.
+  </Accordion>
+
+  <Accordion title="Entry API">
+    Manages registration entries. Corresponds to `spire-server entry` CLI commands.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `CountEntries` | Returns the total number of registration entries |
+    | `ListEntries` | Returns a filtered, optionally paginated list of entries |
+    | `GetEntry` | Returns the entry with the given ID |
+    | `BatchCreateEntry` | Creates one or more entries atomically |
+    | `BatchUpdateEntry` | Updates one or more entries atomically |
+    | `BatchDeleteEntry` | Deletes one or more entries atomically |
+    | `GetAuthorizedEntries` | Returns entries authorized for the calling SPIFFE ID |
+    | `SyncAuthorizedEntries` | Streaming sync of authorized entries (used by the agent) |
+
+    The `BatchCreate`, `BatchUpdate`, and `BatchDelete` RPCs return per-entry results so that partial failures can be identified without rolling back the entire request.
+  </Accordion>
+
+  <Accordion title="Bundle API">
+    Manages trust bundles. Corresponds to `spire-server bundle` CLI commands.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `CountBundles` | Returns the total number of bundles |
+    | `GetBundle` | Returns the trust bundle for the server's trust domain |
+    | `AppendBundle` | Appends JWT or X.509 authorities to the server's trust bundle |
+    | `PublishJWTAuthority` | Publishes a JWT authority to the bundle |
+    | `ListFederatedBundles` | Returns federated bundles for all foreign trust domains |
+    | `GetFederatedBundle` | Returns the bundle for a specific foreign trust domain |
+    | `BatchCreateFederatedBundle` | Creates one or more federated bundles |
+    | `BatchUpdateFederatedBundle` | Updates one or more federated bundles |
+    | `BatchSetFederatedBundle` | Creates or replaces federated bundles |
+    | `BatchDeleteFederatedBundle` | Deletes one or more federated bundles |
+    | `RefreshBundle` | Triggers an on-demand refresh of a federated bundle |
+  </Accordion>
+
+  <Accordion title="SVID API">
+    Mints SVIDs for administrative and testing purposes. Corresponds to `spire-server jwt mint` and `spire-server x509 mint`.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `MintX509SVID` | Mints an X.509-SVID for any SPIFFE ID |
+    | `MintJWTSVID` | Mints a JWT-SVID for any SPIFFE ID |
+    | `BatchNewX509SVID` | Mints X.509-SVIDs in bulk for a set of entries |
+    | `NewJWTSVID` | Mints a JWT-SVID for a specific entry |
+
+    <Warning>
+      `MintX509SVID` and `MintJWTSVID` bypass the normal workload attestation flow and require admin privileges. Use them only for debugging and testing.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="TrustDomain / Federation API">
+    Manages federation relationships with foreign trust domains. Corresponds to `spire-server federation` CLI commands.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `GetTrustDomain` | Returns metadata about the server's own trust domain |
+    | `ListFederationRelationships` | Lists all federation relationships |
+    | `GetFederationRelationship` | Returns a specific federation relationship |
+    | `BatchCreateFederationRelationship` | Creates federation relationships |
+    | `BatchUpdateFederationRelationship` | Updates federation relationships |
+    | `BatchDeleteFederationRelationship` | Deletes federation relationships |
+    | `RefreshBundle` | Triggers an on-demand bundle refresh for a federated trust domain |
+  </Accordion>
+
+  <Accordion title="Logger API">
+    Manages the server's log level at runtime. Corresponds to `spire-server logger` CLI commands.
+
+    | RPC | Description |
+    |-----|-------------|
+    | `GetLogger` | Returns the current log level and logger details |
+    | `SetLogLevel` | Changes the log level without restarting the server |
+
+    Supported log levels: `panic`, `fatal`, `error`, `warn`, `info`, `debug`, `trace`.
+  </Accordion>
+
+  <Accordion title="LocalAuthority API">
+    Manages the server's local JWT and X.509 signing authorities for key rotation. Corresponds to `spire-server localauthority` CLI commands.
+
+    **JWT authority RPCs:** `GetJWTAuthorityState`, `PrepareJWTAuthority`, `ActivateJWTAuthority`, `TaintJWTAuthority`, `RevokeJWTAuthority`
+
+    **X.509 authority RPCs:** `GetX509AuthorityState`, `PrepareX509Authority`, `ActivateX509Authority`, `TaintX509Authority`, `RevokeX509Authority`
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Admin privileges
+
+Callers are granted admin privileges if their X.509-SVID's SPIFFE ID is listed in the `admin_ids` server configuration option. Admin IDs can reside in the server's own trust domain or a federated trust domain, and do not require a corresponding registration entry.
+
+```hcl
+server {
+    trust_domain = "example.org"
+
+    admin_ids = [
+        "spiffe://example.org/ops/spire-admin",
+        "spiffe://otherdomain.org/external-admin",
+    ]
+}
+```
+
+Admin callers can invoke all Server API RPCs. Non-admin callers are limited to a subset of read-only operations and are typically SPIRE Agents communicating with the server during attestation and SVID renewal.
+
+---
+
+## Delegated Identity API
+
+The **Delegated Identity API** is served by the **SPIRE Agent** (not the server) over the agent's admin socket. It allows an authorized workload (a "trusted delegate") to obtain SVIDs and bundles on behalf of other workloads that cannot be directly attested by SPIRE Agent.
+
+<Warning>
+  Granting a workload access to the Delegated Identity API gives it the ability to impersonate any workload whose SVIDs it can obtain. Treat authorized delegates with the same level of trust as the SPIRE Agent itself.
+</Warning>
+
+### How it works
+
+A trusted delegate workload can obtain SVIDs for other workloads in two ways:
+
+1. **Selector-based**: The delegate attests the target workload itself, builds a selector set, and passes those selectors to the Delegated Identity API. The agent returns SVIDs for any matching registration entries.
+
+2. **PID-based**: The delegate passes a target process PID to the API. The agent performs workload attestation for that PID itself and returns the matching SVIDs. The delegate must ensure the PID is not recycled between the API request and response (e.g., using `pidfds` on Linux).
+
+### Configuration
+
+Enable the Delegated Identity API by configuring an admin socket and the list of authorized delegate SPIFFE IDs in the agent configuration:
+
+```hcl
+agent {
+    trust_domain = "example.org"
+
+    # Admin socket for the Delegated Identity API
+    admin_socket_path = "/tmp/spire-agent/private/admin.sock"
+
+    # SPIFFE IDs of workloads authorized to use the Delegated Identity API
+    authorized_delegates = [
+        "spiffe://example.org/authorized_client1",
+        "spiffe://example.org/authorized_client2",
+    ]
+}
+```
+
+On Windows, use the experimental `admin_named_pipe_name` option instead of `admin_socket_path`:
+
+```hcl
+agent {
+    trust_domain = "example.org"
+
+    experimental {
+        admin_named_pipe_name = "\\spire-agent\\private\\admin"
+    }
+
+    authorized_delegates = [
+        "spiffe://example.org/authorized_client1",
+    ]
+}
+```
+
+The Delegated Identity API is defined in the `DelegatedIdentity` gRPC service and provides the following RPCs:
+
+| RPC | Description |
+|-----|-------------|
+| `SubscribeToX509SVIDs` | Streaming subscription to X.509-SVIDs for a given selector set |
+| `SubscribeToX509Bundles` | Streaming subscription to X.509 trust bundles |
+| `FetchJWTSVIDs` | Fetches JWT-SVIDs for a given audience and selector set |
+| `SubscribeToJWTBundles` | Streaming subscription to JWT trust bundles |
+
+---
+
+## UpstreamAuthority API
+
+The `upstreamauthority` commands interact with the server's upstream CA integration:
+
+| Command | Description |
+|---------|-------------|
+| `spire-server upstreamauthority taint -subjectKeyID <skid>` | Marks an upstream X.509 authority as tainted |
+| `spire-server upstreamauthority revoke -subjectKeyID <skid>` | Revokes an upstream X.509 authority from the bundle |
+
+These commands are used during upstream CA rotation workflows when the upstream CA key has been compromised or is being cycled.

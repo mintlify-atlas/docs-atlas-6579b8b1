@@ -1,0 +1,233 @@
+---
+title: "Telemetry & Metrics"
+description: "How to configure SPIRE Server and Agent to emit metrics, with supported backends and key metrics to monitor."
+keywords: ["telemetry", "metrics", "prometheus", "statsd", "dogstatsd", "m3", "grafana", "monitoring"]
+---
+
+SPIRE Server and Agent can emit metrics to one or more collectors. Metrics are defined in a dedicated `telemetry { ... }` block in the configuration file and are separate from the regular log output.
+
+## Supported backends
+
+<CardGroup cols={3}>
+  <Card title="Prometheus" icon="chart-line">
+    Exposes a scrape endpoint. Supports optional TLS and mTLS.
+  </Card>
+  <Card title="Statsd" icon="signal">
+    Pushes metrics to one or more Statsd addresses. Multiple declarations are supported.
+  </Card>
+  <Card title="DogStatsd" icon="dog">
+    Pushes metrics to one or more DogStatsd addresses. Multiple declarations are supported.
+  </Card>
+  <Card title="M3" icon="database">
+    Pushes metrics to one or more M3 collectors. Multiple declarations are supported.
+  </Card>
+  <Card title="In-Memory" icon="memory">
+    Stores metrics in memory. Enabled by default; primarily useful for testing.
+  </Card>
+</CardGroup>
+
+You can configure any combination of these backends simultaneously. Statsd, DogStatsd, and M3 all accept multiple address entries so you can fan out to more than one collector of the same type.
+
+## Configuration
+
+Add a `telemetry { ... }` block to your SPIRE Server or Agent configuration file. The block is identical in structure for both components.
+
+### Full example
+
+```hcl
+telemetry {
+  Prometheus {
+    port = 9988
+    # Optional TLS for the Prometheus scrape endpoint
+    tls {
+      cert_file      = "/path/to/cert.pem"
+      key_file       = "/path/to/key.pem"
+      client_ca_file = "/path/to/ca.pem"  # optional — enables mTLS
+    }
+  }
+
+  DogStatsd = [
+    { address = "localhost:8125" },
+  ]
+
+  Statsd = [
+    { address = "localhost:1337" },
+    { address = "collector.example.org:8125" },
+  ]
+
+  M3 = [
+    { address = "localhost:9000" env = "prod" },
+  ]
+
+  InMem {}
+
+  AllowedLabels   = []
+  BlockedLabels   = []
+  AllowedPrefixes = []
+  BlockedPrefixes = []
+}
+```
+
+### Global options
+
+| Option | Type | Description | Default |
+|---|---|---|---|
+| `MetricPrefix` | string | Prefix prepended to all emitted metric names. | `spire_server` / `spire_agent` |
+| `EnableTrustDomainLabel` | bool | Attach the trust domain as a label on every metric. | `false` |
+| `EnableHostnameLabel` | bool | Attach the hostname as a label on every metric. | `true` |
+| `AllowedPrefixes` | list | Only emit metrics whose name starts with one of these prefixes (`.` separator). | (all allowed) |
+| `BlockedPrefixes` | list | Drop metrics whose name starts with one of these prefixes (`.` separator). | (none blocked) |
+| `AllowedLabels` | list | Only emit these label keys. | (all allowed) |
+| `BlockedLabels` | list | Drop these label keys from all metrics. | (none blocked) |
+
+### Prometheus options
+
+| Option | Type | Description |
+|---|---|---|
+| `host` | string | Listen address for the Prometheus scrape endpoint. |
+| `port` | int | Listen port for the Prometheus scrape endpoint. |
+
+### DogStatsd options
+
+| Option | Type | Description |
+|---|---|---|
+| `address` | string | DogStatsd agent address (host:port). |
+
+### Statsd options
+
+| Option | Type | Description |
+|---|---|---|
+| `address` | string | Statsd server address (host:port). |
+
+### M3 options
+
+| Option | Type | Description |
+|---|---|---|
+| `address` | string | M3 collector address (host:port). |
+| `env` | string | M3 environment tag, e.g. `production` or `staging`. |
+
+## Metric format
+
+Metrics are identified by a sequence of keys and optional labels. The exact wire format depends on the backend. For example, a successful SPIRE Server `AttestAgent` RPC in Statsd format looks like:
+
+```text
+spire_server.rpc.agent.v1.agent.attest_agent:1|c|#status:OK
+spire_server.rpc.agent.v1.agent.attest_agent.elapsed_time:1.045773|ms|#status:OK
+```
+
+The hostname and service name are appended by the Statsd backend automatically.
+
+### Call counters
+
+Call counters are a composite metric type emitted around any method or RPC invocation. For each call counter, SPIRE emits:
+
+- A **counter** tracking the number of invocations (key as-is).
+- A **sample** measuring the elapsed time (key + `.elapsed_time`).
+
+Both carry a `status` label holding the [gRPC status code](https://pkg.go.dev/google.golang.org/grpc/codes#Code) of the call.
+
+## SPIRE Server metrics
+
+| Type | Keys | Labels | Description |
+|---|---|---|---|
+| Call Counter | `rpc`, `<service>`, `<method>` | | Counters over all SPIRE Server RPCs. |
+| Counter | `bundle_manager`, `update`, `federated_bundle` | `trust_domain_id` | A federated bundle was updated. |
+| Call Counter | `bundle_manager`, `fetch`, `federated_bundle` | `trust_domain_id` | The bundle endpoint manager is fetching a federated bundle. |
+| Call Counter | `ca`, `manager`, `bundle`, `prune` | | The CA manager is pruning a bundle. |
+| Counter | `ca`, `manager`, `bundle`, `pruned` | | The CA manager successfully pruned a bundle. |
+| Call Counter | `ca`, `manager`, `jwt_key`, `prepare` | | The CA manager is preparing a JWT key. |
+| Counter | `ca`, `manager`, `x509_ca`, `activate` | | The CA manager activated an X.509 CA. |
+| Call Counter | `ca`, `manager`, `x509_ca`, `prepare` | | The CA manager is preparing an X.509 CA. |
+| Counter | `server_ca`, `sign`, `jwt_svid` | | The CA signed a JWT-SVID. |
+| Counter | `server_ca`, `sign`, `x509_ca_svid` | | The CA signed an X.509 CA SVID. |
+| Counter | `server_ca`, `sign`, `x509_svid` | | The CA signed an X.509 SVID. |
+| Call Counter | `svid`, `rotate` | | The server's own SVID is being rotated. |
+| Gauge | `manager`, `x509_ca`, `rotate`, `expiration` | `trust_domain_id` | X.509 CA expiration time (Unix seconds) for a trust domain. |
+| Gauge | `manager`, `x509_ca`, `rotate`, `ttl` | `trust_domain_id` | X.509 CA TTL remaining for a trust domain. |
+| Gauge | `started` | `version`, `trust_domain_id` | Information about the running server. |
+| Gauge | `uptime_in_ms` | | Server uptime in milliseconds. |
+| Call Counter | `entry`, `cache`, `reload` | | The server is reloading its in-memory entry cache. |
+| Gauge | `node`, `agents_by_id_cache`, `count` | | Agent count in the agents-by-id cache. |
+| Gauge | `node`, `agents_by_expiresat_cache`, `count` | | Agent count in the agents-by-expiresat cache. |
+| Gauge | `entry`, `entries_by_entryid_cache`, `count` | | Entry count in the entries-by-entryid cache. |
+
+<Accordion title="Full datastore metrics">
+
+| Type | Keys | Description |
+|---|---|---|
+| Call Counter | `datastore`, `bundle`, `append` | Appending a bundle. |
+| Call Counter | `datastore`, `bundle`, `count` | Counting bundles. |
+| Call Counter | `datastore`, `bundle`, `create` | Creating a bundle. |
+| Call Counter | `datastore`, `bundle`, `delete` | Deleting a bundle. |
+| Call Counter | `datastore`, `bundle`, `fetch` | Fetching a bundle. |
+| Call Counter | `datastore`, `bundle`, `list` | Listing bundles. |
+| Call Counter | `datastore`, `bundle`, `prune` | Pruning a bundle. |
+| Call Counter | `datastore`, `bundle`, `set` | Setting a bundle. |
+| Call Counter | `datastore`, `bundle`, `update` | Updating a bundle. |
+| Call Counter | `datastore`, `node`, `count` | Counting nodes. |
+| Call Counter | `datastore`, `node`, `create` | Creating a node. |
+| Call Counter | `datastore`, `node`, `delete` | Deleting a node. |
+| Call Counter | `datastore`, `node`, `fetch` | Fetching nodes. |
+| Call Counter | `datastore`, `node`, `list` | Listing nodes. |
+| Call Counter | `datastore`, `node`, `selectors`, `fetch` | Fetching selectors for a node. |
+| Call Counter | `datastore`, `node`, `selectors`, `list` | Listing selectors for a node. |
+| Call Counter | `datastore`, `node`, `selectors`, `set` | Setting selectors for a node. |
+| Call Counter | `datastore`, `node`, `update` | Updating a node. |
+| Call Counter | `datastore`, `registration_entry`, `count` | Counting registration entries. |
+| Call Counter | `datastore`, `registration_entry`, `create` | Creating a registration entry. |
+| Call Counter | `datastore`, `registration_entry`, `delete` | Deleting a registration entry. |
+| Call Counter | `datastore`, `registration_entry`, `fetch` | Fetching registration entries. |
+| Call Counter | `datastore`, `registration_entry`, `list` | Listing registration entries. |
+| Call Counter | `datastore`, `registration_entry`, `prune` | Pruning registration entries. |
+| Call Counter | `datastore`, `registration_entry`, `update` | Updating a registration entry. |
+
+</Accordion>
+
+## SPIRE Agent metrics
+
+| Type | Keys | Labels | Description |
+|---|---|---|---|
+| Call Counter | `rpc`, `<service>`, `<method>` | | Counters over all SPIRE Agent RPCs. |
+| Call Counter | `agent_svid`, `rotate` | | The agent's SVID is being rotated. |
+| Call Counter | `node`, `attestor`, `new_svid` | | The node attestor is requesting a new SVID. |
+| Sample | `cache_manager`, `expiring_svids` | | Number of expiring SVIDs in the cache. |
+| Sample | `cache_manager`, `outdated_svids` | | Number of outdated SVIDs in the cache. |
+| Sample | `cache_manager`, `tainted_jwt_svids`, `workload` | | Number of tainted JWT-SVIDs in the cache. |
+| Sample | `cache_manager`, `tainted_x509_svids`, `workload` | | Number of tainted X.509 SVIDs in the cache. |
+| Counter | `lru_cache_entry_add` | | Entries added to the LRU cache. |
+| Counter | `lru_cache_entry_remove` | | Entries removed from the LRU cache. |
+| Counter | `lru_cache_entry_update` | | Entries updated in the LRU cache. |
+| Gauge | `lru_cache_record_map_size` | | Total entries in the LRU cache records map. |
+| Gauge | `lru_cache_svid_map_size` | | Total SVIDs in the LRU cache SVID map. |
+| Counter | `sds_api`, `connections` | | SDS API connections established. |
+| Gauge | `sds_api`, `connections` | | Active SDS API connections. |
+| Counter | `workload_api`, `connection` | | Workload API connections established. |
+| Gauge | `workload_api`, `connections` | | Active Workload API connections. |
+| Counter | `workload_api`, `bundles_update`, `jwt` | | JWT bundle updates delivered via Workload API. |
+| Sample | `workload_api`, `discovered_selectors` | | Selectors discovered during a workload attestation. |
+| Call Counter | `workload_api`, `workload_attestation` | | Workload attestations performed. |
+| Call Counter | `workload_api`, `workload_attestor` | `attestor` | Invocations of a specific workload attestor. |
+| Gauge | `started` | `version`, `trust_domain_id` | Information about the running agent. |
+| Gauge | `uptime_in_ms` | | Agent uptime in milliseconds. |
+| Counter | `delegated_identity_api`, `connection` | | Delegated Identity API connections established. |
+| Gauge | `delegated_identity_api`, `connections` | | Active Delegated Identity API connections. |
+
+## Grafana dashboards
+
+A pre-built Grafana dashboard JSON is included in the SPIRE repository at [`doc/telemetry/spire_grafana_dashboard.json`](https://github.com/spiffe/spire/blob/main/doc/telemetry/spire_grafana_dashboard.json). It covers server and agent request rates, latency, CA rotation status, cache sizes, and runtime information.
+
+<Steps>
+  <Step title="Configure Prometheus in SPIRE">
+    Add a `Prometheus` block to your `telemetry` section and point your Prometheus server at the scrape endpoint.
+  </Step>
+  <Step title="Add Prometheus as a Grafana data source">
+    In Grafana, navigate to **Configuration → Data sources** and add your Prometheus instance. Note the data source UID — the dashboard expects `uid_prometheus_grafana_datasource`.
+  </Step>
+  <Step title="Import the dashboard">
+    In Grafana, go to **+ → Import dashboard** and upload `spire_grafana_dashboard.json` from the repository.
+  </Step>
+</Steps>
+
+<Tip>
+  Use the `AllowedPrefixes` and `BlockedPrefixes` options to reduce cardinality if your metrics backend charges by series count. For example, blocking `datastore` prefixes removes the many fine-grained datastore call counters if you only need higher-level visibility.
+</Tip>

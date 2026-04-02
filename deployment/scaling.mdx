@@ -1,0 +1,226 @@
+---
+title: "Scaling SPIRE"
+description: "Design patterns for scaling SPIRE deployments: single trust domain, nested SPIRE, and federated topologies."
+keywords: ["scaling", "high availability", "HA", "nested SPIRE", "federated", "topology", "datastore", "postgresql", "mysql"]
+---
+
+SPIRE is designed to scale horizontally. A single SPIRE Server can handle small to medium deployments, but as the number of workloads and agents grows, you can distribute load across multiple server instances, chain servers in a nested hierarchy, or federate independent trust domains.
+
+## Scalability fundamentals
+
+SPIRE Server memory and CPU usage grows proportionally to the number of registration entries, because every active agent periodically syncs its assigned entries (approximately every 5 seconds per agent). The datastore is typically the primary bottleneck: each agent sync triggers authorization checks that are relatively expensive.
+
+A single server instance is also a single point of failure. Running multiple servers in the same trust domain eliminates that risk and distributes the authorization workload.
+
+## High availability with multiple servers
+
+To scale SPIRE Server horizontally, configure all instances in the same trust domain to share a single replicated datastore. Each server instance maintains its own Certificate Authority (either self-signed or an intermediate CA under a shared upstream authority).
+
+```text
+┌─────────────────────────────────────────┐
+│             Trust Domain                │
+│                                         │
+│  ┌──────────────┐  ┌──────────────┐     │
+│  │ SPIRE Server │  │ SPIRE Server │     │
+│  │  (replica 1) │  │  (replica 2) │     │
+│  └──────┬───────┘  └──────┬───────┘     │
+│         └────────┬─────────┘            │
+│                  │                      │
+│         ┌────────▼────────┐             │
+│         │  Shared Database│             │
+│         │ (PostgreSQL /   │             │
+│         │  MySQL)         │             │
+│         └─────────────────┘             │
+└─────────────────────────────────────────┘
+```
+
+SQLite is bundled with SPIRE and is the default datastore, but it does not support concurrent access from multiple servers. For HA deployments, use PostgreSQL or MySQL:
+
+```hcl
+plugins {
+  DataStore "sql" {
+    plugin_data {
+      database_type     = "postgres"
+      connection_string = "dbname=spire user=spire password=secret host=db.example.org sslmode=require"
+    }
+  }
+}
+```
+
+<Note>
+  Datastore performance directly limits SPIRE throughput. Invest in sizing, indexing, and connection pooling for your database before scaling to tens of thousands of agents.
+</Note>
+
+## Deployment topologies
+
+<Tabs>
+  <Tab title="Single trust domain">
+    A single trust domain is best for environments that share an administrative domain and do not require cross-boundary trust. All workloads receive identities signed by the same root CA, and verification is straightforward.
+
+    ```
+    Trust Domain: example.org
+    ├── SPIRE Server cluster  (shared datastore)
+    ├── SPIRE Agents          (one per node)
+    └── Workloads             (SVIDs from example.org)
+    ```
+
+    **When to use it:**
+    - Single cloud provider or data center
+    - One administrative team manages all workloads
+    - No need to authenticate across organizational boundaries
+
+    **Scaling consideration:** When a single trust domain spans multiple geographic regions or cloud providers, maintaining a shared datastore across those boundaries adds operational complexity. If this becomes a concern, consider a nested topology instead.
+
+    **Sizing guidance:**
+
+    The following table provides order-of-magnitude reference numbers based on test environments. They are guidelines only and do not represent guarantees for your environment.
+
+    | Workloads | 10 agents | 100 agents | 1,000 agents | 5,000 agents |
+    |-----------|-----------|------------|--------------|--------------|
+    | 10 | 2 servers, 1 CPU, 1 GB | 2 servers, 2 CPU, 2 GB | 2 servers, 4 CPU, 4 GB | 2 servers, 8 CPU, 8 GB |
+    | 100 | 2 servers, 2 CPU, 2 GB | 2 servers, 2 CPU, 2 GB | 2 servers, 8 CPU, 8 GB | 2 servers, 16 CPU, 16 GB |
+    | 1,000 | 2 servers, 16 CPU, 8 GB | 2 servers, 16 CPU, 8 GB | 2 servers, 16 CPU, 8 GB | 4 servers, 16 CPU, 8 GB |
+    | 10,000 | 4 servers, 16 CPU, 16 GB | 4 servers, 16 CPU, 16 GB | 4 servers, 16 CPU, 16 GB | 8 servers, 16 CPU, 16 GB |
+
+    Additional factors that affect sizing:
+    - SVID and root certificate TTLs (shorter TTLs increase renewal traffic)
+    - Heavy JWT-SVID use (JWTs must be signed on demand, unlike X.509 SVIDs which are pre-computed)
+    - Frequency of registration entry changes
+    - Other workloads running on SPIRE Server nodes
+  </Tab>
+  <Tab title="Nested SPIRE">
+    Nested SPIRE "chains" server clusters together. All servers still issue identities in the same trust domain, but each regional or cluster-level server has its own datastore, removing the need for a globally shared database.
+
+    ```
+    Trust Domain: example.org
+    │
+    ├── Global SPIRE Servers   ← hold root certificate/key
+    │   └── (shared datastore, e.g., global PostgreSQL)
+    │
+    ├── Regional SPIRE Server (AWS us-east-1)
+    │   ├── Co-located SPIRE Agent  ← attests to global server
+    │   │   └── obtains intermediate CA for regional server
+    │   └── Regional datastore (local PostgreSQL)
+    │
+    └── Regional SPIRE Server (GCP europe-west1)
+        ├── Co-located SPIRE Agent
+        └── Regional datastore (local PostgreSQL)
+    ```
+
+    The top-tier servers hold the root certificate and key. Each downstream server co-locates a SPIRE Agent that uses the Workload API to authenticate to the upstream server and receive an intermediate signing certificate. Downstream servers then use that intermediate CA to issue SVIDs.
+
+    **Key properties:**
+    - All SVIDs are still verifiable against the root trust bundle of `example.org`
+    - If the global tier goes down, regional servers continue issuing SVIDs using their intermediate CAs
+    - Each tier has its own isolated datastore — no global database dependency for agent sync
+    - Node attestor plugins can differ per tier, making mixed-cloud deployments straightforward
+
+    **When to use it:**
+    - Multi-region or multi-cloud deployments where a shared global datastore is impractical
+    - Large deployments where you want to segment failure domains
+    - Environments where different cloud providers require different attestation mechanisms
+
+    To configure a downstream server to use an upstream authority, set an `UpstreamAuthority` plugin in the downstream server configuration:
+
+    ```hcl
+    plugins {
+      UpstreamAuthority "spire" {
+        plugin_data {
+          server_address    = "global-spire-server"
+          server_port       = 8081
+          workload_api_socket = "/run/spire/sockets/agent.sock"
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Federated SPIRE">
+    Federated SPIRE connects independent trust domains so that workloads in one domain can authenticate workloads in another. Each trust domain has its own root CA; federation is established by exchanging trust bundles via authenticated bundle endpoints.
+
+    ```
+    Trust Domain A (org-a.example)        Trust Domain B (org-b.example)
+    ┌─────────────────────────┐           ┌─────────────────────────┐
+    │  SPIRE Server Cluster A │◄─────────►│  SPIRE Server Cluster B │
+    │  Bundle endpoint        │  bundle   │  Bundle endpoint        │
+    │  (WebPKI secured)       │  exchange │  (WebPKI secured)       │
+    └─────────────────────────┘           └─────────────────────────┘
+    ```
+
+    **Use cases:**
+    - Multiple organizational divisions with separate administrators and root CAs
+    - Separate staging and production environments that need to communicate
+    - SPIFFE interoperability between organizations, such as between a cloud provider and its customers
+    - Cross-mesh communication between multiple Istio service mesh deployments
+
+    Trust is established by first authenticating the peer's bundle endpoint, then retrieving the foreign trust bundle from that endpoint. Workloads present their SVID when connecting cross-domain; the peer validates the SVID against the retrieved bundle.
+
+    To enable federation, configure a `federation` block in the server configuration and set up bundle endpoint addresses:
+
+    ```hcl
+    server {
+      trust_domain = "org-a.example"
+      # ...
+      federation {
+        bundle_endpoint {
+          address = "0.0.0.0"
+          port    = 8443
+        }
+        federates_with "org-b.example" {
+          bundle_endpoint_url     = "https://spire.org-b.example:8443"
+          bundle_endpoint_profile = "https_spiffe"
+        }
+      }
+    }
+    ```
+
+    <Tip>
+      See the [federation configuration reference](/configuration/federation) for full details. A working federation example using Docker Compose is available in the [spire-tutorials](https://github.com/spiffe/spire-tutorials/tree/main/docker-compose/federation) repository.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## External system integration
+
+### SPIFFE-compatible systems
+
+SPIRE can federate with any system that implements the SPIFFE Federation API, such as another Istio service mesh. This enables cross-mesh and off-mesh mTLS without sharing a CA.
+
+### OIDC federation
+
+The OIDC Discovery Provider enables SPIRE-identified workloads to authenticate to OIDC-compatible services like AWS S3, RDS, or CodePipeline without cloud-specific credentials. The provider serves a JWKS bundle and OIDC discovery document secured by a WebPKI certificate, allowing cloud IAM policies to map SPIFFE IDs to cloud resources.
+
+```text
+Workload  →  JWT-SVID  →  AWS service
+                               ↑
+                          fetches JWKS from
+                          OIDC Discovery Provider
+```
+
+See the [OIDC Discovery Provider configuration](https://github.com/spiffe/spire/tree/main/support/oidc-discovery-provider) for setup details.
+
+## Deployment sizing considerations
+
+Beyond the server count table above, weigh these factors when planning your deployment:
+
+- **SVID TTLs**: shorter TTLs increase the frequency of renewal operations on both agents and the server.
+- **JWT-SVID volume**: JWTs are signed on demand rather than pre-cached, so heavy JWT usage increases server CPU load significantly.
+- **Registration entry churn**: frequent creation, deletion, or update of entries triggers cache invalidation across all agents.
+- **Datastore query cost**: the authorization check per agent sync is the dominant cost; tuning your database configuration has a larger impact than adding server replicas.
+- **Nested topology isolation**: each downstream server cluster in a nested topology has its own datastore, reducing the load on the global tier's database.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Federation configuration" icon="diagram-project" href="/configuration/federation">
+    Configure bundle endpoints and cross-trust-domain federation policies.
+  </Card>
+  <Card title="Upstream authorities" icon="certificate" href="/plugins/upstream-authorities">
+    Chain SPIRE into an existing PKI with Vault, AWS Private CA, or cert-manager.
+  </Card>
+  <Card title="Managing upgrades" icon="arrow-up-right-dots" href="/deployment/upgrading">
+    Follow the rolling upgrade procedure for zero-downtime updates.
+  </Card>
+  <Card title="Kubernetes deployment" icon="dharmachakra" href="/deployment/kubernetes">
+    Deploy SPIRE Server as a StatefulSet with a shared PostgreSQL backend.
+  </Card>
+</CardGroup>

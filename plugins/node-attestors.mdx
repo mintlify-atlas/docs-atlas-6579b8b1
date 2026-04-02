@@ -1,0 +1,478 @@
+---
+title: "Node attestors"
+description: "Node attestors verify the identity of SPIRE agents at boot time. Each attestor is a matched pair: one plugin on the agent gathers evidence, and a corresponding plugin on the server validates it."
+keywords: ["node attestation", "aws iid", "gcp iit", "azure imds", "kubernetes psat", "join token", "sshpop", "tpm devid", "x509pop"]
+---
+
+Node attestation is how a SPIRE Agent proves to the SPIRE Server that it is running on a particular node. During attestation, the agent collects node-specific evidence (such as a cloud provider identity document or a hardware-backed certificate) and sends it to the server for validation. If validation succeeds, the server issues the agent an SVID and registers a set of node selectors based on the attested identity.
+
+Each node attestor is a matched pair:
+
+- An **agent-side plugin** gathers the evidence from the node.
+- A **server-side plugin** validates that evidence and produces selectors.
+
+Both sides must be configured to use the same attestor type.
+
+<Note>
+For any given node, attestation may only occur once unless the node is a re-attestable type (like `join_token`). Subsequent attestation attempts from the same node are rejected by default, implementing Trust On First Use (TOFU) semantics.
+</Note>
+
+## Available node attestors
+
+<AccordionGroup>
+
+<Accordion title="aws_iid — AWS Instance Identity Document">
+
+The `aws_iid` attestor verifies agent identity using the AWS [Instance Identity Document](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instance-identity-documents.html). Agents attested by this plugin receive a SPIFFE ID of the form:
+
+```
+spiffe://example.org/spire/agent/aws_iid/<account_id>/<region>/<instance_id>
+```
+
+**Server plugin configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `access_key_id` | AWS access key ID | `$AWS_ACCESS_KEY_ID` |
+| `secret_access_key` | AWS secret access key | `$AWS_SECRET_ACCESS_KEY` |
+| `skip_block_device` | Skip the anti-tampering check that verifies the root volume has not been detached | `false` |
+| `disable_instance_profile_selectors` | Skip fetching IAM instance profile info (useful when SPIRE Server has no access to `iam.amazonaws.com`) | `false` |
+| `assume_role` | IAM role name to assume before making AWS calls | — |
+| `partition` | AWS partition (`aws`, `aws-cn`, or `aws-us-gov`) | `aws` |
+| `verify_organization` | Block to enable AWS Organization membership validation (see below) | — |
+| `validate_eks_cluster_membership` | Block to restrict attestation to specific EKS clusters | — |
+
+```hcl
+NodeAttestor "aws_iid" {
+    plugin_data {
+        access_key_id     = "ACCESS_KEY_ID"
+        secret_access_key = "SECRET_ACCESS_KEY"
+    }
+}
+```
+
+To restrict attestation to nodes belonging to specific EKS clusters:
+
+```hcl
+NodeAttestor "aws_iid" {
+    plugin_data {
+        validate_eks_cluster_membership = {
+            eks_cluster_names = ["production-cluster", "staging-cluster"]
+        }
+    }
+}
+```
+
+**Agent plugin configuration**
+
+The agent-side plugin generally requires no configuration when running on EC2:
+
+```hcl
+NodeAttestor "aws_iid" {
+    plugin_data {}
+}
+```
+
+For non-standard environments, specify the metadata endpoint:
+
+```hcl
+NodeAttestor "aws_iid" {
+    plugin_data {
+        ec2_metadata_endpoint = "http://169.254.169.254/latest"
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `aws_iid:account_id` | `aws_iid:account_id:123456789012` | AWS account ID |
+| `aws_iid:az` | `aws_iid:az:us-west-2b` | Availability zone |
+| `aws_iid:iamrole` | `aws_iid:iamrole:arn:aws:iam::123456789012:role/Blog` | IAM role from the instance profile |
+| `aws_iid:image:id` | `aws_iid:image:id:ami-5fb8c835` | AMI ID |
+| `aws_iid:instance:id` | `aws_iid:instance:id:i-0b22a22eec53b9321` | EC2 instance ID |
+| `aws_iid:tag` | `aws_iid:tag:name:blog` | Instance tag key and value |
+| `aws_iid:region` | `aws_iid:region:us-west-2` | AWS region |
+| `aws_iid:sg:id` | `aws_iid:sg:id:sg-01234567` | Security group ID |
+| `aws_iid:sg:name` | `aws_iid:sg:name:blog` | Security group name |
+
+**Required IAM permissions**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ec2:DescribeInstances",
+                "iam:GetInstanceProfile"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+</Accordion>
+
+<Accordion title="gcp_iit — GCP Instance Identity Token">
+
+The `gcp_iit` attestor verifies agent identity using the [GCP Instance Identity Token](https://cloud.google.com/compute/docs/instances/verifying-instance-identity). Agents receive a SPIFFE ID of the form:
+
+```
+spiffe://example.org/spire/agent/gcp_iit/<project_id>/<instance_id>
+```
+
+This plugin requires an allowlist of GCP Project IDs. Only nodes from listed projects are permitted to attest.
+
+**Server plugin configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `projectid_allow_list` | List of GCP project IDs from which nodes may attest | — |
+| `use_instance_metadata` | Fetch instance metadata from the GCE API to augment selectors | `false` |
+| `service_account_file` | Path to a GCP service account credential file | — |
+| `allowed_label_keys` | Instance label keys to include as selectors | — |
+| `allowed_metadata_keys` | Instance metadata keys to include as selectors | — |
+| `max_metadata_value_size` | Maximum metadata value size (bytes) | `128` |
+| `agent_path_template` | Custom template for the agent SPIFFE ID path | `/{{ .PluginName }}/{{ .ProjectID }}/{{ .InstanceID }}` |
+
+```hcl
+NodeAttestor "gcp_iit" {
+    plugin_data {
+        projectid_allow_list = ["my-project-123"]
+    }
+}
+```
+
+**Selectors produced**
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `gcp_iit:project-id` | `gcp_iit:project-id:my-project-123` | GCP project ID |
+| `gcp_iit:zone` | `gcp_iit:zone:us-west1-b` | Zone |
+| `gcp_iit:instance-name` | `gcp_iit:instance-name:blog-server` | Instance name |
+| `gcp_iit:tag` | `gcp_iit:tag:blog-server` | Network tag (requires `use_instance_metadata`) |
+| `gcp_iit:sa` | `gcp_iit:sa:123@developer.gserviceaccount.com` | Service account (requires `use_instance_metadata`) |
+| `gcp_iit:label` | `gcp_iit:label:key:value` | Instance label (requires `use_instance_metadata` and `allowed_label_keys`) |
+
+</Accordion>
+
+<Accordion title="azure_imds — Azure Instance Metadata Service">
+
+The `azure_imds` attestor verifies agent identity using the Azure Instance Metadata Service (IMDS) attested document. Unlike the older `azure_msi` plugin, it does not require the VM to have a managed identity. Agents receive a SPIFFE ID of the form:
+
+```
+spiffe://example.org/spire/agent/azure_imds/<tenant_id>/<subscription_id>/<vm_id>
+```
+
+**Server plugin configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `tenants` | Map of tenant configurations, keyed by tenant domain | — |
+| `agent_path_template` | Custom template for the agent SPIFFE ID path | `/{{ .PluginName }}/{{ .TenantID }}/{{ .SubscriptionID }}/{{ .VMID }}` |
+
+Each tenant entry supports:
+
+| Option | Description |
+|--------|-------------|
+| `restrict_to_subscriptions` | List of Azure subscription IDs allowed to attest |
+| `allowed_vm_tags` | VM tag keys to include as selectors |
+| `secret_auth` | Authenticate with an app ID and app secret |
+| `token_auth` | Authenticate with an app ID and a JWT token on disk |
+
+Basic configuration using default Azure credential chain:
+
+```hcl
+NodeAttestor "azure_imds" {
+    plugin_data {
+        tenants = {
+            "example.onmicrosoft.com" = {
+                restrict_to_subscriptions = ["d5b40d61-272e-48da-beb9-05f295c42bd6"]
+            }
+        }
+    }
+}
+```
+
+Configuration with secret-based authentication:
+
+```hcl
+NodeAttestor "azure_imds" {
+    plugin_data {
+        tenants = {
+            "example.onmicrosoft.com" = {
+                secret_auth = {
+                    app_id     = "12345678-1234-1234-1234-123456789012"
+                    app_secret = "your-application-secret"
+                }
+                restrict_to_subscriptions = ["d5b40d61-272e-48da-beb9-05f295c42bd6"]
+            }
+        }
+    }
+}
+```
+
+**Selectors produced (all prefixed `azure_imds:`)**
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `subscription-id` | `azure_imds:subscription-id:d5b40d61-...` | Azure subscription ID |
+| `vm-name` | `azure_imds:vm-name:blog` | VM name |
+| `vmss-name` | `azure_imds:vmss-name:myvmss` | VM scale set name |
+| `resource-group` | `azure_imds:resource-group:frontend` | Resource group |
+| `vm-location` | `azure_imds:vm-location:eastus` | VM location |
+| `virtual-network` | `azure_imds:virtual-network:vnet` | Virtual network name |
+| `network-security-group` | `azure_imds:network-security-group:frontend:webservers` | NSG name (qualified by resource group) |
+| `vm-tag` | `azure_imds:vm-tag:environment:production` | VM tag key and value |
+
+</Accordion>
+
+<Accordion title="k8s_psat — Kubernetes Projected Service Account Token">
+
+The `k8s_psat` attestor verifies agent identity using a Kubernetes [Projected Service Account Token](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection). The server validates the token using the Kubernetes Token Review API. Agents receive a SPIFFE ID of the form:
+
+```
+spiffe://example.org/spire/agent/k8s_psat/<cluster>/<node_uid>
+```
+
+The server can attest nodes from multiple clusters and does not need to run inside Kubernetes.
+
+**Server plugin configuration**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `clusters` | Map of cluster configurations, keyed by an arbitrary cluster name | — |
+
+Each cluster entry supports:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `service_account_allow_list` | Namespace-qualified service account names allowed to attest (e.g. `"production:spire-agent"`) | — |
+| `audience` | Token audience for validation | `["spire-server"]` |
+| `kube_config_file` | Path to kubeconfig for API server auth. Required when SPIRE Server runs outside the cluster. | — |
+| `allowed_node_label_keys` | Node label keys to include as selectors | — |
+| `allowed_pod_label_keys` | Pod label keys to include as selectors | — |
+
+In-cluster configuration:
+
+```hcl
+NodeAttestor "k8s_psat" {
+    plugin_data {
+        clusters = {
+            "production" = {
+                service_account_allow_list = ["spire:spire-agent"]
+            }
+        }
+    }
+}
+```
+
+Out-of-cluster configuration:
+
+```hcl
+NodeAttestor "k8s_psat" {
+    plugin_data {
+        clusters = {
+            "production" = {
+                service_account_allow_list = ["spire:spire-agent"]
+                kube_config_file           = "/etc/spire/kubeconfig"
+            }
+        }
+    }
+}
+```
+
+**Required Kubernetes RBAC for the SPIRE Server service account**
+
+```yaml
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get"]
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+```
+
+**Selectors produced**
+
+| Selector | Example | Description |
+|----------|---------|-------------|
+| `k8s_psat:cluster` | `k8s_psat:cluster:production` | Cluster name from plugin config |
+| `k8s_psat:agent_ns` | `k8s_psat:agent_ns:spire` | Agent pod namespace |
+| `k8s_psat:agent_sa` | `k8s_psat:agent_sa:spire-agent` | Agent service account |
+| `k8s_psat:agent_pod_name` | `k8s_psat:agent_pod_name:spire-agent-v5wgr` | Agent pod name |
+| `k8s_psat:agent_pod_uid` | `k8s_psat:agent_pod_uid:79261129-...` | Agent pod UID |
+| `k8s_psat:agent_node_name` | `k8s_psat:agent_node_name:worker-1` | Node name |
+| `k8s_psat:agent_node_uid` | `k8s_psat:agent_node_uid:5dbb7b21-...` | Node UID |
+| `k8s_psat:agent_node_ip` | `k8s_psat:agent_node_ip:172.16.10.1` | Node IP |
+| `k8s_psat:agent_pod_label` | `k8s_psat:agent_pod_label:key:value` | Pod label (requires `allowed_pod_label_keys`) |
+| `k8s_psat:agent_node_label` | `k8s_psat:agent_node_label:key:value` | Node label (requires `allowed_node_label_keys`) |
+
+</Accordion>
+
+<Accordion title="join_token — Pre-shared join token">
+
+The `join_token` attestor verifies agent identity using a one-time token generated by the SPIRE Server. This is the simplest attestation method and is suitable for bootstrapping or development. Agents receive a SPIFFE ID of the form:
+
+```
+spiffe://example.org/spire/agent/join_token/<token>
+```
+
+Generate a token before starting the agent:
+
+```bash
+spire-server token generate -spiffeID spiffe://example.org/my-agent
+```
+
+**Server plugin configuration**
+
+This plugin has no configuration options.
+
+```hcl
+NodeAttestor "join_token" {
+    plugin_data {}
+}
+```
+
+**Agent plugin configuration**
+
+```hcl
+NodeAttestor "join_token" {
+    plugin_data {}
+}
+```
+
+Pass the token to the agent at startup via the `-joinToken` flag or the `join_token` config option:
+
+```bash
+spire-agent run -config agent.conf -joinToken <token>
+```
+
+<Note>
+Join tokens are one-time-use. Once an agent has attested with a token, that token cannot be reused.
+</Note>
+
+</Accordion>
+
+<Accordion title="sshpop — SSH certificate">
+
+The `sshpop` attestor verifies agent identity using an existing SSH host certificate. It is appropriate for environments that already provision SSH certificates to their nodes.
+
+**Server plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `cert_authorities` | List of SSH certificate authority public keys (in OpenSSH authorized keys format) |
+| `cert_authorities_file` | Path to a file containing CA public keys |
+| `allow_expired_certificates` | Allow nodes with expired SSH certificates to attest |
+| `agent_path_template` | Custom template for the agent SPIFFE ID path |
+
+```hcl
+NodeAttestor "sshpop" {
+    plugin_data {
+        cert_authorities_file = "/etc/spire/ssh_ca.pub"
+    }
+}
+```
+
+**Agent plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `host_cert_path` | Path to the SSH host certificate |
+| `host_key_path` | Path to the SSH host private key |
+
+```hcl
+NodeAttestor "sshpop" {
+    plugin_data {
+        host_cert_path = "/etc/ssh/ssh_host_rsa_cert"
+        host_key_path  = "/etc/ssh/ssh_host_rsa_key"
+    }
+}
+```
+
+</Accordion>
+
+<Accordion title="tpm_devid — TPM DevID certificate">
+
+The `tpm_devid` attestor verifies agent identity using a [DevID certificate](https://trustedcomputinggroup.org/resource/tpm-2-0-keys-for-device-identity-and-attestation/) issued to a node's Trusted Platform Module (TPM). This provides hardware-backed attestation.
+
+**Server plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `devid_ca_bundle_path` | Path to PEM-encoded CA bundle used to validate DevID certificates |
+| `endorsement_ca_bundle_path` | Path to PEM-encoded CA bundle used to validate TPM Endorsement Key certificates |
+| `devid_privilege_id` | (Optional) Privilege extension OID that must be present in the DevID certificate |
+
+```hcl
+NodeAttestor "tpm_devid" {
+    plugin_data {
+        devid_ca_bundle_path      = "/etc/spire/devid-ca.pem"
+        endorsement_ca_bundle_path = "/etc/spire/ek-ca.pem"
+    }
+}
+```
+
+**Agent plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `devid_cert_path` | Path to the DevID certificate |
+| `devid_priv_path` | Path to the DevID private key handle |
+| `tpm_device_path` | Path to the TPM device (Linux only) |
+
+```hcl
+NodeAttestor "tpm_devid" {
+    plugin_data {
+        devid_cert_path = "/var/lib/spire/devid.crt"
+        devid_priv_path = "/var/lib/spire/devid.key"
+    }
+}
+```
+
+</Accordion>
+
+<Accordion title="x509pop — Existing X.509 certificate">
+
+The `x509pop` attestor verifies agent identity using an existing X.509 certificate, for example an infrastructure certificate provisioned by an existing PKI. The agent proves possession of the corresponding private key through a challenge-response.
+
+**Server plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `ca_bundle_path` | Path to the PEM-encoded CA bundle to verify agent certificates |
+| `ca_bundle_paths` | List of paths to PEM-encoded CA bundle files |
+| `agent_path_template` | Custom template for the agent SPIFFE ID path |
+
+```hcl
+NodeAttestor "x509pop" {
+    plugin_data {
+        ca_bundle_path = "/etc/spire/x509pop-ca.pem"
+    }
+}
+```
+
+**Agent plugin configuration**
+
+| Option | Description |
+|--------|-------------|
+| `private_key_path` | Path to the agent's private key (PEM) |
+| `certificate_path` | Path to the agent's certificate (PEM); may include intermediates |
+
+```hcl
+NodeAttestor "x509pop" {
+    plugin_data {
+        private_key_path  = "/etc/spire/agent.key"
+        certificate_path  = "/etc/spire/agent.crt"
+    }
+}
+```
+
+</Accordion>
+
+</AccordionGroup>

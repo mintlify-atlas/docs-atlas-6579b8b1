@@ -1,0 +1,363 @@
+---
+title: 'Server configuration'
+description: 'Complete configuration reference for the SPIRE Server, including all top-level options, plugin configuration, federation, health checks, and CLI flags.'
+keywords: ['spire', 'server', 'configuration', 'hcl', 'trust domain', 'ca', 'federation']
+---
+
+SPIRE Server is the central authority that manages identities within a trust domain. This page covers the full configuration reference for `spire-server`.
+
+Configuration files may be written in HCL or JSON. Most file options have equivalent CLI flags that take precedence when set. If you pass `-expandEnv` to SPIRE, `$VARIABLE` and `${VARIABLE}` style environment variables are expanded before parsing.
+
+## Sample configuration file
+
+```hcl
+server {
+    trust_domain = "example.org"
+
+    bind_address = "0.0.0.0"
+    bind_port    = "8081"
+    socket_path  = "/tmp/spire-server/private/api.sock"
+    log_level    = "INFO"
+    data_dir     = "/opt/spire/.data/"
+
+    default_x509_svid_ttl = "6h"
+    default_jwt_svid_ttl  = "5m"
+    ca_ttl                = "72h"
+
+    ca_subject {
+        country      = ["US"]
+        organization = ["SPIRE"]
+        common_name  = ""
+    }
+}
+
+plugins {
+    DataStore "sql" {
+        plugin_data {
+            database_type     = "sqlite3"
+            connection_string = "/opt/spire/.data/datastore.sqlite3"
+        }
+    }
+    NodeAttestor "join_token" {
+        plugin_data {}
+    }
+    KeyManager "disk" {
+        plugin_data {
+            keys_path = "/opt/spire/.data/keys.json"
+        }
+    }
+}
+```
+
+<Tabs>
+  <Tab title="HCL">
+    SPIRE natively parses HCL. The sample above uses HCL syntax.
+  </Tab>
+  <Tab title="JSON">
+    ```json
+    {
+      "server": {
+        "trust_domain": "example.org",
+        "bind_address": "0.0.0.0",
+        "bind_port": 8081,
+        "socket_path": "/tmp/spire-server/private/api.sock",
+        "log_level": "INFO",
+        "data_dir": "/opt/spire/.data/",
+        "default_x509_svid_ttl": "6h",
+        "default_jwt_svid_ttl": "5m",
+        "ca_ttl": "72h"
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Server configuration options
+
+All options below live inside the top-level `server { ... }` block.
+
+| Option | Description | Default |
+|---|---|---|
+| `trust_domain` | The trust domain this server belongs to. Should be no more than 255 characters. | — |
+| `bind_address` | IP address or DNS name the SPIRE server listens on. | `0.0.0.0` |
+| `bind_port` | Port number the SPIRE server listens on. | `8081` |
+| `socket_path` | Path to bind the SPIRE Server API Unix socket (Unix only). | `/tmp/spire-server/private/api.sock` |
+| `data_dir` | Directory the server uses for runtime data. | — |
+| `log_level` | Logging level: `DEBUG`, `INFO`, `WARN`, or `ERROR`. | `INFO` |
+| `log_format` | Log output format: `text` or `json`. | `text` |
+| `log_file` | File path to write logs to. | — |
+| `log_source_location` | Include source file, line number, and method name in log entries. Adds a small runtime cost. | `false` |
+| `ca_key_type` | Key type for the server CA (both X.509 and JWT): `rsa-2048`, `rsa-4096`, `ec-p256`, or `ec-p384`. The JWT key type can be overridden separately by `jwt_key_type`. | `ec-p256` |
+| `jwt_key_type` | Key type for the JWT CA specifically. Falls back to `ca_key_type` if unset. | Value of `ca_key_type` |
+| `ca_ttl` | Default CA/signing key TTL. | `24h` |
+| `ca_subject` | Subject attributes for CA certificates. See [`ca_subject`](#ca_subject-options) below. | — |
+| `default_x509_svid_ttl` | Default X.509-SVID TTL. | `1h` |
+| `default_jwt_svid_ttl` | Default JWT-SVID TTL. | `5m` |
+| `agent_ttl` | TTL used for agent SVIDs. | Value of `default_x509_svid_ttl` |
+| `jwt_issuer` | The `iss` claim used when minting JWT-SVIDs. | — |
+| `disable_jwt_svids` | Completely disables JWT-SVID functionality. The server will not generate JWT keys, sign JWT-SVIDs, or implement JWT-related API calls. | `false` |
+| `admin_ids` | SPIFFE IDs that grant admin privileges when present in a caller's X.509-SVID. Must reside in the server trust domain or a federated one. | — |
+| `audit_log_enabled` | Enable audit logging. | `false` |
+| `federation` | Bundle endpoint and federation relationship configuration. See [Federation configuration](/configuration/federation). | — |
+| `ratelimit` | Rate limiting settings. See [`ratelimit` options](#ratelimit-options) below. | — |
+| `experimental` | Experimental options subject to change. See [Experimental options](#experimental-options) below. | — |
+| `prune_attested_nodes_expired_for` | Periodically purge attested node records whose SVIDs expired longer ago than this duration. Non-reattestable nodes are excluded unless `prune_tofu_nodes` is also set. Banned nodes are never pruned. | — |
+| `prune_tofu_nodes` | Include expired TOFU (trust-on-first-use) nodes in pruning. Banned nodes are not affected. | `false` |
+| `max_attested_node_info_staleness` | How long to cache attested node information before re-fetching from the datastore. | `0s` |
+| `profiling_enabled` | Enable the `net/http/pprof` endpoint. | `false` |
+| `profiling_port` | Port for the pprof endpoint. Only used when `profiling_enabled` is `true`. | — |
+| `profiling_freq` | Frequency for dumping profiling data to disk. Only active when `profiling_enabled` is `true` and this value is greater than `0`. | — |
+| `profiling_names` | List of profile names to dump on each tick. See [Profiling names](#profiling-names). | — |
+
+### `ca_subject` options
+
+```hcl
+ca_subject {
+    country      = ["US"]
+    organization = ["ACME"]
+    common_name  = ""
+}
+```
+
+| Option | Description |
+|---|---|
+| `country` | Array of `Country` values for the CA certificate subject. |
+| `organization` | Array of `Organization` values for the CA certificate subject. |
+| `common_name` | The `CommonName` value for the CA certificate subject. |
+
+### `ratelimit` options
+
+These options are typically adjusted when the server is placed behind a load balancer that performs its own rate limiting.
+
+| Option | Description | Default |
+|---|---|---|
+| `attestation` | Rate limit node attestation to one attempt per second per IP address. | `true` |
+| `signing` | Rate limit JWT and X.509 signing to 500 requests per second per IP address (applied separately per type). | `true` |
+
+```hcl
+server {
+    ratelimit {
+        attestation = true
+        signing     = true
+    }
+}
+```
+
+### Profiling names
+
+Valid values for `profiling_names`:
+
+- `goroutine`
+- `threadcreate`
+- `heap`
+- `block`
+- `mutex`
+- `trace`
+- `cpu`
+
+## Experimental options
+
+<Warning>
+Experimental options may change or be removed in future releases without prior notice.
+</Warning>
+
+| Option | Description | Default |
+|---|---|---|
+| `cache_reload_interval` | Time between in-memory entry cache reloads. Increasing this value reduces database load for large deployments but slows entry propagation to agents. | `5s` |
+| `full_cache_reload_interval` | How often to perform a full cache reload from the database when using the events-based cache. | `24h` |
+| `events_based_cache` | Use events to update the cache incrementally instead of full reloads. Reduces database overhead. | `false` |
+| `prune_events_older_than` | Maximum age for events before they are deleted. Only relevant when `events_based_cache` is enabled. Decreasing this value keeps the events table smaller but increases the risk of missing events during database downtime. | `12h` |
+| `event_timeout` | Maximum time to wait for an event before giving up. | `15m` |
+| `auth_opa_policy_engine` | Custom OPA policy engine for authorization decisions. See [`auth_opa_policy_engine` options](#auth_opa_policy_engine-options) below. | Default SPIRE policy |
+| `named_pipe_name` | Named pipe for the SPIRE Server API (Windows only). | `\spire-server\private\api` |
+| `require_pq_kem` | Require a post-quantum-safe key exchange method for TLS handshakes. | `false` |
+
+### `auth_opa_policy_engine` options
+
+```hcl
+experimental {
+    auth_opa_policy_engine {
+        local {
+            rego_path        = "/etc/spire/policy.rego"
+            policy_data_path = "/etc/spire/policy_data.json"
+        }
+    }
+}
+```
+
+| Option | Description |
+|---|---|
+| `local.rego_path` | Path to the OPA Rego policy file for authorization. |
+| `local.policy_data_path` | Path to the data bindings file for policy evaluation. |
+
+## Plugin configuration
+
+Plugin configurations live in a top-level `plugins { ... }` block.
+
+```hcl
+plugins {
+    pluginType "pluginName" {
+        plugin_data {
+            # plugin-specific options
+        }
+    }
+}
+```
+
+| Option | Description |
+|---|---|
+| `plugin_cmd` | Path to the plugin binary. Not needed for built-in plugins. |
+| `plugin_checksum` | Optional SHA-256 checksum of the plugin binary. Not needed for built-in plugins. |
+| `enabled` | Enable or disable the plugin. | 
+| `plugin_data` | Inline plugin-specific configuration. Mutually exclusive with `plugin_data_file`. |
+| `plugin_data_file` | Path to a file containing plugin-specific configuration. Mutually exclusive with `plugin_data`. |
+
+<Note>
+Plugins configured with `plugin_data_file` can be reconfigured at runtime (Posix only) by sending `SIGUSR1` to the SPIRE Server process. The DataStore plugin is not reconfigurable even when using `plugin_data_file`.
+</Note>
+
+### Plugin types
+
+| Type | Description |
+|---|---|
+| `DataStore` | Persistent storage. Only the built-in `sql` plugin is supported; third-party DataStore plugins are not. |
+| `KeyManager` | Signing and key storage for the server's signing operations. |
+| `CredentialComposer` | Customizes SVID and CA attributes. |
+| `NodeAttestor` | Validates agent identity during node attestation. |
+| `UpstreamAuthority` | Integrates SPIRE Server with an external PKI. |
+| `Notifier` | Receives notifications for server events. |
+| `BundlePublisher` | Publishes the local trust bundle to an external store. |
+
+### Built-in plugins
+
+<AccordionGroup>
+  <Accordion title="DataStore">
+    | Name | Description |
+    |---|---|
+    | `sql` | SQL database backend supporting SQLite, PostgreSQL, and MySQL. |
+  </Accordion>
+  <Accordion title="KeyManager">
+    | Name | Description |
+    |---|---|
+    | `aws_kms` | Manages keys in AWS KMS. |
+    | `disk` | Manages keys persisted to disk. |
+    | `memory` | Manages unpersisted in-memory keys. |
+  </Accordion>
+  <Accordion title="NodeAttestor">
+    | Name | Description |
+    |---|---|
+    | `aws_iid` | Attests using an AWS Instance Identity Document. |
+    | `azure_imds` | Attests using the Azure Instance Metadata Service. |
+    | `azure_msi` | Attests using an Azure MSI token. |
+    | `gcp_iit` | Attests using a GCP Instance Identity Token. |
+    | `join_token` | Attests using a server-generated join token. |
+    | `k8s_psat` | Attests using a Kubernetes Projected Service Account token. |
+    | `sshpop` | Attests using an existing SSH certificate. |
+    | `tpm_devid` | Attests using a TPM provisioned with a DevID certificate. |
+    | `x509pop` | Attests using an existing X.509 certificate. |
+  </Accordion>
+  <Accordion title="UpstreamAuthority">
+    | Name | Description |
+    |---|---|
+    | `disk` | Signs intermediate certificates using a CA loaded from disk. |
+    | `aws_pca` | Signs using AWS Certificate Manager Private CA. |
+    | `awssecret` | Signs using a CA loaded from AWS Secrets Manager. |
+    | `gcp_cas` | Signs using GCP Certificate Authority Service. |
+    | `vault` | Signs using HashiCorp Vault PKI secrets engine. |
+    | `spire` | Signs using an upstream SPIRE Server in the same trust domain. |
+    | `cert-manager` | Signs using a cert-manager Issuer. |
+  </Accordion>
+  <Accordion title="Notifier">
+    | Name | Description |
+    |---|---|
+    | `gcs_bundle` | Pushes the trust bundle to a Google Cloud Storage object. |
+    | `k8sbundle` | Pushes the trust bundle to a Kubernetes ConfigMap. |
+  </Accordion>
+  <Accordion title="BundlePublisher">
+    | Name | Description |
+    |---|---|
+    | `aws_s3` | Publishes the trust bundle to an Amazon S3 bucket. |
+    | `gcp_cloudstorage` | Publishes the trust bundle to a Google Cloud Storage bucket. |
+    | `aws_rolesanywhere_trustanchor` | Publishes the trust bundle to an AWS IAM Roles Anywhere trust anchor. |
+    | `k8s_configmap` | Publishes the trust bundle to a Kubernetes ConfigMap. |
+  </Accordion>
+</AccordionGroup>
+
+## Health check configuration
+
+The server can expose a health check endpoint by setting `listener_enabled = true`. Two paths are available: one for liveness and one for readiness.
+
+```hcl
+health_checks {
+    listener_enabled = true
+    bind_address     = "localhost"
+    bind_port        = "8080"
+    live_path        = "/live"
+    ready_path       = "/ready"
+}
+```
+
+## Telemetry configuration
+
+SPIRE Server can emit metrics to a variety of backends. See the [Telemetry configuration](https://github.com/spiffe/spire/blob/main/doc/telemetry/telemetry_config.md) guide for full details.
+
+```hcl
+telemetry {
+    Prometheus {
+        port = 1234
+    }
+}
+```
+
+## Command line flags
+
+### `spire-server run`
+
+| Flag | Description | Default |
+|---|---|---|
+| `-bindAddress` | IP address or DNS name of the SPIRE server. | — |
+| `-config` | Path to the SPIRE config file. | `conf/server/server.conf` |
+| `-dataDir` | Directory for runtime data. | — |
+| `-expandEnv` | Expand `$VARIABLES` in the config file. | — |
+| `-logFile` | File to write logs to. | — |
+| `-logFormat` | Log format: `text` or `json`. | — |
+| `-logLevel` | Log level: `DEBUG`, `INFO`, `WARN`, or `ERROR`. | — |
+| `-serverPort` | Port number. | — |
+| `-socketPath` | Path to bind the server API socket. | — |
+| `-trustDomain` | Trust domain for this server. | — |
+
+### `spire-server validate`
+
+Validates a SPIRE Server configuration file. Accepts the same flags as `spire-server run`.
+
+| Flag | Description | Default |
+|---|---|---|
+| `-config` | Path to the config file to validate. | `server.conf` |
+| `-expandEnv` | Expand `$VARIABLES` before validating. | `false` |
+
+### `spire-server token generate`
+
+Generates a join token and creates a registration entry for it. The token can bootstrap one agent installation.
+
+| Flag | Description | Default |
+|---|---|---|
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+| `-spiffeID` | Optional SPIFFE ID to assign the token owner. | — |
+| `-ttl` | Token TTL in seconds. | `600` |
+
+### `spire-server healthcheck`
+
+| Flag | Description | Default |
+|---|---|---|
+| `-shallow` | Perform a less stringent health check. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+| `-verbose` | Print verbose output. | — |
+
+## Running as a Windows service
+
+On Windows, SPIRE Server can run as a Windows service. Only the `run` command is supported in service mode. SPIRE does not create the service automatically — you must register it manually.
+
+```bash
+sc.exe create spire-server binpath=c:\spire\bin\spire-server.exe
+sc.exe start spire-server run -config c:\spire\conf\server\server.conf
+```

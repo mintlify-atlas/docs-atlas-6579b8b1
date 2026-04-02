@@ -1,0 +1,675 @@
+---
+title: "SPIRE Server CLI"
+description: "Full command reference for the spire-server binary."
+---
+
+The `spire-server` binary exposes a set of subcommand groups for managing agents, registration entries, bundles, federation, tokens, SVIDs, and local authority. All commands communicate with the server over a Unix domain socket (default: `/tmp/spire-server/private/api.sock`).
+
+## Global flags
+
+The `-socketPath` flag is available on every subcommand. Use it when the server socket is not at the default location.
+
+```bash
+spire-server <command> -socketPath /custom/path/api.sock
+```
+
+---
+
+## `spire-server run`
+
+Starts the SPIRE Server process.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-bindAddress` | IP address or DNS name of the SPIRE server | |
+| `-config` | Path to a SPIRE config file | `conf/server/server.conf` |
+| `-dataDir` | Directory to store runtime data | |
+| `-expandEnv` | Expand `$VARIABLES` in the config file | `false` |
+| `-logFile` | File to write logs to | |
+| `-logFormat` | Log format: `text` or `json` | |
+| `-logLevel` | Log level: `DEBUG`, `INFO`, `WARN`, or `ERROR` | |
+| `-serverPort` | Port number of the SPIRE server | |
+| `-socketPath` | Path to bind the SPIRE Server API socket | |
+| `-trustDomain` | Trust domain this server belongs to (max 255 chars) | |
+
+---
+
+## `agent` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server agent list">
+    Displays attested nodes.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-attestationType` | Filter agents by attestation type (e.g. `join_token`, `x509pop`) | |
+    | `-banned` | Filter by ban status: `true`, `false`, or any other value returns all | |
+    | `-canReattest` | Filter by re-attestation ability: `true`, `false`, or any other value returns all | |
+    | `-expiresBefore` | Filter by expiration time (format: `"2006-01-02 15:04:05 -0700 -07"`) | |
+    | `-selector` | Colon-delimited `type:value` selector. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server agent list
+    spire-server agent list -attestationType join_token
+    spire-server agent list -banned false -expiresBefore "2026-01-01 00:00:00 +0000 UTC"
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server agent show">
+    Displays details (including node selectors) of an attested node given its SPIFFE ID.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the agent to show | |
+
+    ```bash
+    spire-server agent show -spiffeID spiffe://example.org/spire/agent/join_token/abc123
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server agent ban">
+    Bans an attested node. A banned agent cannot re-attest.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the agent to ban | |
+
+    ```bash
+    spire-server agent ban -spiffeID spiffe://example.org/spire/agent/join_token/abc123
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server agent evict">
+    De-attests an already attested node (removes it from the server's list of attested agents).
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the agent to evict | |
+
+    ```bash
+    spire-server agent evict -spiffeID spiffe://example.org/spire/agent/join_token/abc123
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server agent count">
+    Displays the total number of attested nodes, optionally filtered.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-banned` | Filter by ban status: `true`, `false`, or any other value returns all | |
+    | `-canReattest` | Filter by re-attestation ability: `true`, `false`, or any other value returns all | |
+    | `-expiresBefore` | Filter by expiration time (format: `"2006-01-02 15:04:05 -0700 -07"`) | |
+    | `-selector` | Colon-delimited `type:value` selector. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the records to count | |
+
+    ```bash
+    spire-server agent count
+    spire-server agent count -banned true
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server agent purge">
+    Purges expired agents that were attested using a non-TOFU (re-attestable) security model. Only agents whose SVIDs have been expired longer than `-expiredFor` are removed.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-dryRun` | Print agents that would be purged without deleting them | `false` |
+    | `-expiredFor` | Duration that must have passed since the agent SVID expired for the agent to be eligible for purging | `720h` (30 days) |
+    | `-output` | Output format: `pretty` or `json` | `pretty` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    # Dry run: see which agents would be purged
+    spire-server agent purge -dryRun
+
+    # Purge agents expired for more than 7 days
+    spire-server agent purge -expiredFor 168h
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `entry` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server entry create">
+    Creates one or more registration entries.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-admin` | Grant this entry's SPIFFE ID access to Server APIs | |
+    | `-data` | Path to a JSON file containing registration data. Use `-` for stdin. If set, other entry flags must be omitted. | |
+    | `-dns` | DNS name to include in issued SVIDs. Repeatable. | |
+    | `-downstream` | Indicates the entry describes a downstream SPIRE server | |
+    | `-entryExpiry` | Expiry from epoch (seconds) after which the entry is pruned | |
+    | `-entryID` | User-specified ID for the new entry (optional; generated if omitted) | |
+    | `-federatesWith` | Trust domain SPIFFE ID this entry federates with. Repeatable. | |
+    | `-node` | Apply this entry to matching nodes rather than workloads | |
+    | `-parentID` | SPIFFE ID of this record's parent | |
+    | `-selector` | Colon-delimited `type:value` selector for attestation. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID this record represents | |
+    | `-storeSVID` | Store the issued SVID via an SVIDStore plugin | |
+    | `-x509SVIDTTL` | TTL in seconds for X509-SVIDs issued by this entry | `default_x509_svid_ttl` |
+    | `-jwtSVIDTTL` | TTL in seconds for JWT-SVIDs issued by this entry | `default_jwt_svid_ttl` |
+
+    ```bash
+    spire-server entry create \
+      -parentID spiffe://example.org/spire/agent/join_token/abc123 \
+      -spiffeID spiffe://example.org/myservice \
+      -selector unix:uid:1000
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server entry update">
+    Updates an existing registration entry.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-admin` | Grant this entry's SPIFFE ID access to Server APIs | |
+    | `-data` | Path to JSON file containing registration data. Use `-` for stdin. | |
+    | `-dns` | DNS name to include in issued SVIDs. Repeatable. | |
+    | `-downstream` | Indicates the entry describes a downstream SPIRE server | |
+    | `-entryExpiry` | Expiry from epoch (seconds) after which the entry is pruned | |
+    | `-entryID` | The Registration Entry ID of the record to update | |
+    | `-federatesWith` | Trust domain SPIFFE ID this entry federates with. Repeatable. | |
+    | `-parentID` | SPIFFE ID of this record's parent | |
+    | `-selector` | Colon-delimited `type:value` selector. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID this record represents | |
+    | `-storeSVID` | Store the issued SVID via an SVIDStore plugin | |
+    | `-x509SVIDTTL` | TTL in seconds for X509-SVIDs issued by this entry | `default_x509_svid_ttl` |
+    | `-jwtSVIDTTL` | TTL in seconds for JWT-SVIDs issued by this entry | `default_jwt_svid_ttl` |
+
+    ```bash
+    spire-server entry update \
+      -entryID <entry-id> \
+      -x509SVIDTTL 3600
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server entry delete">
+    Deletes a registration entry.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-entryID` | The Registration Entry ID of the record to delete | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server entry delete -entryID <entry-id>
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server entry show">
+    Displays configured registration entries matching the given filters.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-downstream` | Filter to entries describing a downstream SPIRE server | |
+    | `-entryID` | The Entry ID of the record to show | |
+    | `-federatesWith` | SPIFFE ID of a federated trust domain. Repeatable. | |
+    | `-parentID` | The parent ID of the records to show | |
+    | `-selector` | Colon-delimited `type:value` selector. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the records to show | |
+
+    ```bash
+    spire-server entry show
+    spire-server entry show -spiffeID spiffe://example.org/myservice
+    spire-server entry show -selector unix:uid:1000
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server entry count">
+    Displays the total number of registration entries, optionally filtered.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-downstream` | Filter to entries describing a downstream SPIRE server | |
+    | `-federatesWith` | SPIFFE ID of a federated trust domain. Repeatable. | |
+    | `-parentID` | The parent ID of the records to count | |
+    | `-selector` | Colon-delimited `type:value` selector. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the records to count | |
+
+    ```bash
+    spire-server entry count
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `bundle` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server bundle show">
+    Displays the trust bundle for the server's trust domain.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-format` | Output format: `pem` or `spiffe` | `pem` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server bundle show
+    spire-server bundle show -format spiffe
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server bundle list">
+    Displays federated bundles (bundles for trust domains other than the server's own).
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | Trust domain SPIFFE ID of the bundle to show. If unset, all bundles are shown. | |
+    | `-format` | Output format: `pem` or `spiffe` | `pem` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server bundle list
+    spire-server bundle list -id spiffe://otherdomain.org
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server bundle set">
+    Creates or updates bundle data for a foreign trust domain. Cannot alter the server's own trust domain bundle.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | Trust domain SPIFFE ID of the bundle to set | |
+    | `-path` | Path to the file containing bundle data. If unset, data is read from stdin. | |
+    | `-format` | Format of the bundle: `pem` or `spiffe` | `pem` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server bundle set \
+      -id spiffe://otherdomain.org \
+      -path /path/to/bundle.pem
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server bundle delete">
+    Deletes bundle data for a foreign trust domain. Cannot delete the server's own trust domain bundle.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | Trust domain SPIFFE ID of the bundle to delete | |
+    | `-mode` | Deletion mode: `restrict` (default, prevents deletion if entries federate with it), `dissociate` (deletes bundle and removes federation links from entries), or `delete` (deletes bundle and all associated entries) | `restrict` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server bundle delete -id spiffe://otherdomain.org -mode dissociate
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server bundle count">
+    Displays the total number of bundles.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server bundle count
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server bundle refresh">
+    Refreshes the bundle from the specified federated trust domain's bundle endpoint.
+
+    <Note>
+      Use `spire-server federation refresh` to trigger an on-demand refresh of a federated bundle.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `federation` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server federation create">
+    Creates a dynamic federation relationship with a foreign trust domain.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-bundleEndpointProfile` | Endpoint profile type: `https_web` or `https_spiffe` | |
+    | `-bundleEndpointURL` | HTTPS URL of the SPIFFE bundle endpoint | |
+    | `-data` | Path to a JSON file containing federation relationships. Use `-` for stdin. | |
+    | `-endpointSpiffeID` | SPIFFE ID of the bundle endpoint server (only for `https_spiffe` profile) | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-trustDomain` | Name of the trust domain to federate with (e.g. `example.org`) | |
+    | `-trustDomainBundleFormat` | Format of the initial bundle data: `pem` or `spiffe` | `pem` |
+    | `-trustDomainBundlePath` | Path to the initial trust domain bundle data (optional) | |
+
+    ```bash
+    spire-server federation create \
+      -trustDomain otherdomain.org \
+      -bundleEndpointURL https://otherdomain.org/bundle \
+      -bundleEndpointProfile https_web
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server federation update">
+    Updates a dynamic federation relationship with a foreign trust domain.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-bundleEndpointProfile` | Endpoint profile type: `https_web` or `https_spiffe` | |
+    | `-bundleEndpointURL` | HTTPS URL of the SPIFFE bundle endpoint | |
+    | `-data` | Path to a JSON file containing federation relationships. Use `-` for stdin. | |
+    | `-endpointSpiffeID` | SPIFFE ID of the bundle endpoint server (only for `https_spiffe` profile) | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-trustDomain` | Name of the trust domain to federate with | |
+    | `-trustDomainBundleFormat` | Format of the bundle data: `pem` or `spiffe` | `pem` |
+    | `-trustDomainBundlePath` | Path to the trust domain bundle data (optional) | |
+
+    ```bash
+    spire-server federation update \
+      -trustDomain otherdomain.org \
+      -bundleEndpointURL https://otherdomain.org/bundle \
+      -bundleEndpointProfile https_spiffe \
+      -endpointSpiffeID spiffe://otherdomain.org/bundle-server
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server federation delete">
+    Deletes a dynamic federation relationship.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | SPIFFE ID of the trust domain of the relationship | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server federation delete -id spiffe://otherdomain.org
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server federation show">
+    Shows a dynamic federation relationship.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-trustDomain` | Trust domain name of the relationship to show (e.g. `example.org`) | |
+
+    ```bash
+    spire-server federation show -trustDomain otherdomain.org
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server federation list">
+    Lists all dynamic federation relationships.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | SPIFFE ID of a specific trust domain relationship to list | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server federation list
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server federation refresh">
+    Refreshes the bundle from the specified federated trust domain on demand.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-id` | SPIFFE ID of the trust domain of the relationship | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server federation refresh -id spiffe://otherdomain.org
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `token` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server token generate">
+    Generates a one-time node join token and creates a corresponding registration entry. The token can be used to bootstrap a single `spire-agent` installation.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | Additional SPIFFE ID to assign to the token owner (optional) | |
+    | `-ttl` | Token TTL in seconds | `600` |
+
+    ```bash
+    spire-server token generate -spiffeID spiffe://example.org/myagent -ttl 300
+    ```
+
+    Example output:
+    ```
+    Token: 2e5d1f82-c6c0-4b74-9f91-7f19d5e1a234
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `jwt` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server jwt mint">
+    Mints a JWT-SVID using the server's JWT signing key. Useful for testing and debugging.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-audience` | Audience claim to include in the SVID. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the JWT-SVID | |
+    | `-ttl` | TTL of the JWT-SVID | First non-zero value from `Entry.jwt_svid_ttl`, `Entry.ttl`, `default_jwt_svid_ttl`, `5m` |
+    | `-write` | File to write the token to instead of stdout | |
+
+    ```bash
+    spire-server jwt mint \
+      -spiffeID spiffe://example.org/myservice \
+      -audience myaudience
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `x509` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server x509 mint">
+    Mints an X509-SVID using the server's X.509 signing key. Useful for testing and debugging.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-dns` | DNS name to include in the SVID. Repeatable. | |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+    | `-spiffeID` | The SPIFFE ID of the X509-SVID | |
+    | `-ttl` | TTL of the X509-SVID | First non-zero value from `Entry.x509_svid_ttl`, `Entry.ttl`, `default_x509_svid_ttl`, `1h` |
+    | `-write` | Directory to write output to instead of stdout | |
+
+    ```bash
+    spire-server x509 mint \
+      -spiffeID spiffe://example.org/myservice \
+      -dns myservice.example.org \
+      -write /tmp/svid/
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `logger` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server logger get">
+    Gets the current log level of the SPIRE Server.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-output` | Output format: `pretty` or `json` | `pretty` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server logger get
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server logger set">
+    Sets the log level of the SPIRE Server at runtime (without restarting).
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-level` | New log level: `panic`, `fatal`, `error`, `warn`, `info`, `debug`, or `trace` | |
+    | `-output` | Output format: `pretty` or `json` | `pretty` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server logger set -level debug
+    spire-server logger set -level info
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `healthcheck`
+
+Checks the health of the SPIRE Server process.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-shallow` | Perform a less stringent health check | |
+| `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+| `-verbose` | Print verbose information | |
+
+```bash
+spire-server healthcheck
+spire-server healthcheck -verbose
+```
+
+---
+
+## `validate`
+
+Validates a SPIRE Server configuration file without starting the server. Accepts the same flags as `spire-server run`.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-config` | Path to a SPIRE server configuration file | `server.conf` |
+| `-expandEnv` | Expand `$VARIABLES` in the config file | `false` |
+
+```bash
+spire-server validate -config /etc/spire/server.conf
+```
+
+---
+
+## `localauthority` subcommands
+
+The `localauthority` subcommands manage the server's local JWT and X.509 signing authorities. These are used for key rotation workflows.
+
+<AccordionGroup>
+  <Accordion title="JWT authority commands">
+    | Command | Description |
+    |---------|-------------|
+    | `localauthority jwt show` | Shows the current local JWT authorities |
+    | `localauthority jwt prepare` | Generates a new JWT authority key and injects it into the bundle |
+    | `localauthority jwt activate -authorityID <id>` | Activates a prepared JWT authority for signing |
+    | `localauthority jwt taint -authorityID <id>` | Marks the previously active JWT authority as tainted |
+    | `localauthority jwt revoke -authorityID <id>` | Removes the previously active JWT authority from the bundle |
+
+    All commands accept `-socketPath` and `-output` (`pretty` or `json`).
+
+    ```bash
+    spire-server localauthority jwt show
+    spire-server localauthority jwt prepare
+    spire-server localauthority jwt activate -authorityID <id>
+    spire-server localauthority jwt taint -authorityID <id>
+    spire-server localauthority jwt revoke -authorityID <id>
+    ```
+  </Accordion>
+
+  <Accordion title="X.509 authority commands">
+    | Command | Description |
+    |---------|-------------|
+    | `localauthority x509 show` | Shows the current local X.509 authorities |
+    | `localauthority x509 prepare` | Generates a new X.509 authority key and injects the CA cert into the bundle |
+    | `localauthority x509 activate -authorityID <id>` | Activates a prepared X.509 authority for signing |
+    | `localauthority x509 taint -authorityID <id>` | Marks the previously active X.509 authority as tainted |
+    | `localauthority x509 revoke -authorityID <id>` | Removes the previously active X.509 authority from the bundle |
+
+    All commands accept `-socketPath` and `-output` (`pretty` or `json`).
+
+    ```bash
+    spire-server localauthority x509 show
+    spire-server localauthority x509 prepare
+    spire-server localauthority x509 activate -authorityID <id>
+    spire-server localauthority x509 taint -authorityID <id>
+    spire-server localauthority x509 revoke -authorityID <id>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `upstreamauthority` subcommands
+
+<AccordionGroup>
+  <Accordion title="spire-server upstreamauthority taint">
+    Marks an upstream X.509 authority as tainted.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-subjectKeyID` | X.509 Subject Key Identifier (SKID) of the upstream authority's CA cert | |
+    | `-output` | Output format: `pretty` or `json` | `pretty` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server upstreamauthority taint -subjectKeyID <skid>
+    ```
+  </Accordion>
+
+  <Accordion title="spire-server upstreamauthority revoke">
+    Revokes the previously active upstream X.509 authority by removing it from the bundle.
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `-subjectKeyID` | X.509 Subject Key Identifier (SKID) of the upstream authority's CA cert | |
+    | `-output` | Output format: `pretty` or `json` | `pretty` |
+    | `-socketPath` | Path to the SPIRE Server API socket | `/tmp/spire-server/private/api.sock` |
+
+    ```bash
+    spire-server upstreamauthority revoke -subjectKeyID <skid>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## JSON format for `-data`
+
+The `-data` flag on `entry create` and `entry update` accepts a JSON file (or stdin with `-data -`) in the following form:
+
+```json
+{
+    "entries": []
+}
+```
+
+Each entry object follows the `RegistrationEntry` schema from the [SPIRE common protobuf](https://github.com/spiffe/spire/blob/main/proto/spire/common/common.proto).
+
+<Note>
+  To create node entries, set `parent_id` to the special value `spiffe://<your-trust-domain>/spire/server`. This is equivalent to passing the `-node` flag on the CLI.
+</Note>

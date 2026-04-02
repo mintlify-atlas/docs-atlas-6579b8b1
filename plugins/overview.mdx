@@ -1,0 +1,119 @@
+---
+title: "Plugin overview"
+description: "SPIRE's plugin architecture enables flexible integration with cloud providers, PKI systems, hardware security modules, and identity stores."
+keywords: ["spire", "plugins", "architecture", "plugin types", "configuration"]
+---
+
+SPIRE is built around a plugin architecture. Nearly every integration point — from how a node proves its identity, to where signing keys are stored, to how the trust bundle is distributed — is implemented as a plugin. This lets you swap in the right implementation for your environment without changing the core SPIRE binary.
+
+Both the SPIRE Server and SPIRE Agent load plugins from a `plugins { ... }` block in their respective configuration files. Most built-in plugins ship with SPIRE itself; external plugins are separate binaries loaded at runtime.
+
+## Plugin types
+
+### Server plugins
+
+| Type | Description |
+|------|-------------|
+| `DataStore` | Persistent storage for SPIRE Server state (SQLite, PostgreSQL, MySQL). Pluggability is no longer supported — only the built-in `sql` plugin can be used. |
+| `KeyManager` | Signing and key storage for the server's CA operations. Use this to keep private keys in a hardware security module or cloud KMS. |
+| `NodeAttestor` | Validates the identity of an agent node during attestation. Paired with the matching agent-side NodeAttestor. |
+| `UpstreamAuthority` | Integrates SPIRE into an existing PKI by having an upstream CA sign SPIRE's intermediate certificates. |
+| `Notifier` | Receives events from SPIRE Server (such as trust bundle updates) and takes action, such as pushing the bundle to a Kubernetes ConfigMap. |
+| `BundlePublisher` | Pushes the local trust bundle to an external store so relying parties can fetch it. |
+| `CredentialComposer` | Customizes attributes on issued SVIDs and CA certificates. |
+
+### Agent plugins
+
+| Type | Description |
+|------|-------------|
+| `KeyManager` | Generates and stores the agent's private key. Can be bound to hardware for stronger guarantees. |
+| `NodeAttestor` | Gathers the evidence used to prove the node's identity to the server. |
+| `WorkloadAttestor` | Introspects a workload process to produce a set of selectors (e.g. Kubernetes namespace, Unix UID) used to match registration entries. |
+| `SVIDStore` | Stores issued X.509-SVIDs, private keys, and bundles into an external trust store. |
+
+## How plugins are configured
+
+Plugin configuration lives inside the `plugins { ... }` block of either `server.conf` or `agent.conf`. The structure is:
+
+```hcl
+plugins {
+    PluginType "plugin_name" {
+        plugin_data {
+            # plugin-specific options
+        }
+    }
+}
+```
+
+The following wrapper options are available for any plugin entry:
+
+| Option | Description |
+|--------|-------------|
+| `plugin_cmd` | Path to an external plugin binary. Not needed for built-in plugins. |
+| `plugin_checksum` | Optional SHA-256 of the external plugin binary for verification. |
+| `enabled` | Set to `false` to disable the plugin without removing its config block. Defaults to `true`. |
+| `plugin_data` | Inline plugin-specific configuration (mutually exclusive with `plugin_data_file`). |
+| `plugin_data_file` | Path to a separate file containing plugin-specific configuration. |
+
+### Static inline configuration
+
+```hcl
+plugins {
+    NodeAttestor "join_token" {
+        plugin_data {
+        }
+    }
+
+    KeyManager "disk" {
+        plugin_data {
+            directory = "/opt/spire/data/agent"
+        }
+    }
+}
+```
+
+### External plugin with configuration file
+
+Use `plugin_data_file` when you want to manage plugin config separately — for example, to rotate secrets without touching the main config file.
+
+```hcl
+plugins {
+    NodeAttestor "my_custom_attestor" {
+        plugin_cmd      = "/opt/spire/plugins/my-attestor"
+        plugin_checksum = "4e1243bd22c66e76c2ba9eddc1f91394e57f9f83"
+        plugin_data_file = "/etc/spire/my-attestor.conf"
+    }
+}
+```
+
+### Runtime reconfiguration (POSIX only)
+
+Plugins configured with `plugin_data_file` can be reconfigured at runtime without restarting SPIRE. Send `SIGUSR1` to the SPIRE process and it will:
+
+1. Reload the plugin data file
+2. Compare it to the previously loaded data
+3. Reconfigure the plugin if the data changed
+
+<Note>
+The `DataStore` plugin cannot be reconfigured at runtime even when using `plugin_data_file`.
+</Note>
+
+## Explore plugin types
+
+<CardGroup cols={2}>
+  <Card title="Node attestors" href="/plugins/node-attestors">
+    How agents prove their node identity. Covers AWS IID, GCP IIT, Azure IMDS, Kubernetes PSAT, join_token, sshpop, tpm_devid, and x509pop.
+  </Card>
+  <Card title="Workload attestors" href="/plugins/workload-attestors">
+    How the agent identifies workloads. Covers Kubernetes, Docker, Unix, and systemd attestors along with the selectors each produces.
+  </Card>
+  <Card title="Upstream authorities" href="/plugins/upstream-authorities">
+    How SPIRE chains into an existing PKI. Covers disk, AWS PCA, awssecret, GCP CAS, Vault, nested SPIRE, cert-manager, and EJBCA.
+  </Card>
+  <Card title="Key managers" href="/plugins/key-managers">
+    Where SPIRE stores signing keys. Covers AWS KMS, Azure Key Vault, GCP KMS, disk, and memory for both server and agent.
+  </Card>
+  <Card title="Bundle publishers" href="/plugins/bundle-publishers">
+    How SPIRE distributes the trust bundle to external stores. Covers S3, GCS, AWS Roles Anywhere, Kubernetes ConfigMap, and Notifiers.
+  </Card>
+</CardGroup>

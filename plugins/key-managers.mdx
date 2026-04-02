@@ -1,0 +1,213 @@
+---
+title: "Key managers"
+description: "Key manager plugins control where SPIRE stores and uses its signing keys. Choose a key manager that matches your security and durability requirements."
+keywords: ["key manager", "aws kms", "azure key vault", "gcp kms", "disk", "memory", "hsm", "signing keys"]
+---
+
+Key managers handle the creation, storage, and use of private keys for signing operations. Choosing the right key manager is a critical security decision:
+
+- **Hardware-backed key managers** (AWS KMS, Azure Key Vault, GCP KMS) ensure private keys never exist in plaintext outside a hardware security module. This is the recommended choice for production.
+- **Disk-based key managers** persist keys to the filesystem. Suitable for environments where the filesystem itself is secured (e.g. encrypted volumes, restricted permissions).
+- **Memory-based key managers** hold keys only in RAM. Keys are lost on restart; re-attestation or re-derivation is required. Use only for testing or ephemeral environments.
+
+SPIRE has separate key manager plugins for the **Server** (which signs SVIDs) and the **Agent** (which stores the agent's own identity key).
+
+<Tabs>
+
+<Tab title="Server key managers">
+
+## Server key managers
+
+The server key manager handles the keys used by SPIRE Server's CA to sign X.509-SVIDs and JWT-SVIDs.
+
+<AccordionGroup>
+
+<Accordion title="aws_kms — AWS Key Management Service">
+
+The `aws_kms` plugin stores server signing keys in [AWS KMS](https://aws.amazon.com/kms/) as Customer Managed Keys (CMKs). The private key never leaves KMS; signing operations are performed in the service. This is the recommended key manager for AWS deployments.
+
+The plugin automatically creates, rotates, and prunes KMS keys. It assigns each key an alias of the form:
+
+```
+alias/SPIRE_SERVER/<trust_domain>/<server_id>/<key_id>
+```
+
+**Configuration**
+
+| Option | Type | Required | Description | Default |
+|--------|------|----------|-------------|---------|
+| `region` | string | Yes | AWS region where keys are stored | — |
+| `key_identifier_file` | string | Required if `key_identifier_value` not set | File path where the server's unique ID is persisted | — |
+| `key_identifier_value` | string | Required if `key_identifier_file` not set | Static server instance identifier | — |
+| `access_key_id` | string | See note | AWS access key ID | `$AWS_ACCESS_KEY_ID` |
+| `secret_access_key` | string | See note | AWS secret access key | `$AWS_SECRET_ACCESS_KEY` |
+| `key_policy_file` | string | No | Path to a custom KMS key policy in JSON format | — |
+
+Basic configuration using an IAM instance role (recommended on EC2/EKS):
+
+```hcl
+KeyManager "aws_kms" {
+    plugin_data {
+        region              = "us-east-2"
+        key_identifier_file = "/opt/spire/data/server/key-id"
+    }
+}
+```
+
+Configuration with explicit credentials:
+
+```hcl
+KeyManager "aws_kms" {
+    plugin_data {
+        region                = "us-east-2"
+        key_identifier_file   = "/opt/spire/data/server/key-id"
+        access_key_id         = "AKIAIOSFODNN7EXAMPLE"
+        secret_access_key     = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    }
+}
+```
+
+Configuration with key tagging:
+
+```hcl
+KeyManager "aws_kms" {
+    plugin_data {
+        region              = "us-east-2"
+        key_identifier_file = "/opt/spire/data/server/key-id"
+        key_tags = {
+            Environment = "production"
+            Team        = "platform"
+        }
+    }
+}
+```
+
+**Required IAM permissions**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "kms:CreateAlias",
+                "kms:CreateKey",
+                "kms:DescribeKey",
+                "kms:GetPublicKey",
+                "kms:ListKeys",
+                "kms:ListAliases",
+                "kms:ScheduleKeyDeletion",
+                "kms:Sign",
+                "kms:UpdateAlias",
+                "kms:DeleteAlias"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+Add `kms:TagResource` when using `key_tags`.
+
+**Supported key types:** `rsa-2048`, `rsa-4096`, `ec-p256`, `ec-p384`
+
+</Accordion>
+
+<Accordion title="disk — Keys persisted to disk">
+
+The `disk` plugin maintains server signing keys in a JSON file on disk. Keys survive server restarts. This is the simplest durable option and is suitable for production when combined with filesystem-level security controls (encrypted storage, restricted file permissions).
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `keys_path` | Path to the key file on disk |
+
+```hcl
+KeyManager "disk" {
+    plugin_data = {
+        keys_path = "/opt/spire/data/server/keys.json"
+    }
+}
+```
+
+<Warning>
+Protect the key file with appropriate filesystem permissions. Anyone who can read the file can obtain the server's private signing keys.
+</Warning>
+
+</Accordion>
+
+<Accordion title="memory — In-memory keys (non-persistent)">
+
+The `memory` plugin holds server signing keys only in RAM. Keys are lost when the server process stops. On restart, new keys are generated and the trust bundle is updated.
+
+This plugin has no configuration options. Use it only for testing or short-lived environments.
+
+```hcl
+KeyManager "memory" {
+    plugin_data {}
+}
+```
+
+<Warning>
+Do not use `memory` in production. Restarting the server generates new keys, which requires all agents and workloads to re-fetch updated trust bundles.
+</Warning>
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+<Tab title="Agent key managers">
+
+## Agent key managers
+
+The agent key manager stores the private key that corresponds to the agent's own SVID — its identity credential issued by SPIRE Server.
+
+<AccordionGroup>
+
+<Accordion title="disk — Key persisted to disk">
+
+The `disk` plugin writes the agent's private key to a file on disk. If the agent restarts, it loads the existing key and reconnects to SPIRE Server without re-attesting. If the agent is offline long enough for its certificate to expire, re-attestation is required.
+
+**Configuration**
+
+| Option | Description |
+|--------|-------------|
+| `directory` | Directory in which the private key file is stored |
+
+```hcl
+KeyManager "disk" {
+    plugin_data = {
+        directory = "/opt/spire/data/agent"
+    }
+}
+```
+
+This is the recommended agent key manager for most deployments. It ensures continuity across restarts and reduces load on the attestation flow.
+
+</Accordion>
+
+<Accordion title="memory — In-memory key (non-persistent)">
+
+The `memory` plugin generates the agent's private key in RAM. The key is lost on restart, requiring re-attestation every time the agent process restarts.
+
+This plugin has no configuration options.
+
+```hcl
+KeyManager "memory" {
+    plugin_data {}
+}
+```
+
+Use this when the agent runs in a truly ephemeral environment (e.g. a short-lived container) and re-attestation is expected on every start, or when no persistent storage is available.
+
+</Accordion>
+
+</AccordionGroup>
+
+</Tab>
+
+</Tabs>

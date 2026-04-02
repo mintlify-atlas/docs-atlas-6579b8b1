@@ -1,0 +1,48 @@
+---
+title: "Introduction"
+description: "SPIRE is the production-ready implementation of SPIFFE, the open standard for workload identity in zero-trust systems."
+keywords: ["SPIRE", "SPIFFE", "workload identity", "zero trust", "SVID", "mTLS", "CNCF"]
+---
+
+SPIRE (the **SPIFFE Runtime Environment**) is a production-hardened toolchain that implements the [SPIFFE](https://spiffe.io) standard for workload identity. It issues cryptographically verifiable identities to software systems—regardless of where they run—so that services can authenticate each other without relying on shared secrets, static credentials, or network location.
+
+## Why workload identity matters
+
+In a zero-trust architecture, "the network is not the perimeter." Services must prove who they are, not just where they are. SPIRE solves this by automatically issuing short-lived, cryptographically signed identity documents (SVIDs) to workloads at runtime. Those SVIDs can establish mutual TLS connections, sign JWT tokens, or authenticate to secret stores, databases, and cloud provider APIs—without any long-lived credentials ever touching disk.
+
+## SPIFFE and SPIRE
+
+SPIFFE (Secure Production Identity Framework For Everyone) is the open standard. It defines:
+
+- A URI-based identity format — the **SPIFFE ID** (e.g., `spiffe://example.org/frontend`)
+- Two credential formats — **X.509-SVIDs** and **JWT-SVIDs**
+- The **Workload API**, the socket-based interface that workloads use to fetch their credentials
+
+SPIRE is the reference implementation of SPIFFE. It provides all the infrastructure needed to issue, rotate, and revoke SVIDs in real environments: a server that acts as the certificate authority, an agent that runs on every node, and a rich plugin system for adapting to any cloud or platform.
+
+## Core components
+
+**SPIRE Server** is the control plane. It manages the trust domain, stores registration entries that map workload selectors to SPIFFE IDs, and issues SVIDs to agents on behalf of their workloads. A SPIRE deployment typically has one server (or a clustered server) per trust domain.
+
+**SPIRE Agent** runs on every node where workloads execute. It attests the node to the server, caches SVIDs locally, and exposes the Workload API over a Unix domain socket. Workloads connect to that socket to receive their credentials—no code changes required beyond integrating with the Workload API.
+
+## CNCF graduated project
+
+SPIRE is a [graduated project](https://www.cncf.io/projects/spire/) of the Cloud Native Computing Foundation (CNCF), signaling production readiness and broad community adoption. It has been through independent security audits and is in active use across industries including finance, healthcare, and large-scale cloud infrastructure.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run a SPIRE Server and Agent locally and fetch your first SVID in minutes.
+  </Card>
+  <Card title="Core concepts" icon="book-open" href="/concepts">
+    Understand SPIFFE IDs, SVIDs, trust domains, attestation, and registration entries.
+  </Card>
+  <Card title="Installation" icon="download" href="/deployment/installation">
+    Download pre-built binaries or container images and deploy to production.
+  </Card>
+  <Card title="Kubernetes" icon="box" href="/deployment/kubernetes">
+    Deploy SPIRE Server and Agent on a Kubernetes cluster.
+  </Card>
+</CardGroup>

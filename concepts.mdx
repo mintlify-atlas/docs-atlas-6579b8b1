@@ -1,0 +1,155 @@
+---
+title: "Core concepts"
+description: "The key building blocks of SPIFFE and SPIRE: identities, credentials, trust, and how attestation works."
+keywords: ["SPIFFE ID", "SVID", "trust domain", "trust bundle", "attestation", "registration entry", "selector", "X.509", "JWT"]
+---
+
+SPIRE implements the SPIFFE standard. Understanding the concepts below gives you the mental model you need to configure, operate, and integrate with SPIRE effectively.
+
+<AccordionGroup>
+
+  <Accordion title="SPIFFE ID">
+    A SPIFFE ID is a URI that uniquely identifies a workload within a trust domain. It takes the form:
+
+    ```text
+    spiffe://<trust-domain>/<path>
+    ```
+
+    For example: `spiffe://example.org/frontend` or `spiffe://payments.prod/api/checkout`.
+
+    SPIFFE IDs are the nouns of the SPIFFE model — they name the principals that can hold credentials and authenticate to one another. They appear as the Subject Alternative Name (SAN) in X.509-SVIDs and as the `sub` claim in JWT-SVIDs.
+
+    The path component is free-form and has no prescribed structure. By convention, paths reflect service hierarchy or deployment context (e.g., `/region/us-east-1/service/frontend`), but SPIRE itself imposes no requirements on path format.
+  </Accordion>
+
+  <Accordion title="SVID (SPIFFE Verifiable Identity Document)">
+    An SVID is a credential that carries a SPIFFE ID. SPIRE issues two types:
+
+    **X.509-SVID**
+
+    A standard X.509 certificate where the SPIFFE ID is encoded in the Subject Alternative Name (URI SAN) field. X.509-SVIDs are used to establish mutual TLS (mTLS) connections. SPIRE automatically rotates them before expiry and delivers updates through the Workload API.
+
+    **JWT-SVID**
+
+    A JSON Web Token (JWT) signed by the SPIRE Server's signing key, with the SPIFFE ID in the `sub` claim. JWT-SVIDs are useful for HTTP-based service-to-service authentication where TLS is terminated by an intermediary (e.g., a load balancer) and you still need to prove workload identity at the application layer.
+
+    SVIDs are short-lived by design. The SPIRE Agent refreshes them automatically, so workloads never need to handle credential rotation themselves.
+  </Accordion>
+
+  <Accordion title="Trust domain">
+    A trust domain is an administrative boundary for identity. Every SPIFFE ID belongs to exactly one trust domain, identified by the hostname component of the SPIFFE URI (e.g., `example.org` in `spiffe://example.org/frontend`).
+
+    A SPIRE Server manages one trust domain. Within that domain, it is the root of all identity issuance. Workloads in the same trust domain can verify each other's SVIDs using the trust bundle.
+
+    For workloads across different trust domains to authenticate each other, the trust bundles of those domains must be exchanged. SPIRE supports this through [federation](/configuration/federation).
+  </Accordion>
+
+  <Accordion title="Trust bundle">
+    The trust bundle is the set of CA certificates for a trust domain. It is the cryptographic root of trust — workloads use it to verify SVIDs issued by any SPIRE Server in that domain.
+
+    SPIRE Agents receive the trust bundle from the server during attestation and cache it locally. The Workload API delivers the trust bundle alongside SVIDs, so workloads always have what they need to verify a peer's identity.
+
+    Trust bundles are automatically rotated when the server's signing key is refreshed, and the updates propagate to all agents and workloads transparently.
+  </Accordion>
+
+  <Accordion title="Node attestation">
+    Node attestation is the process by which a SPIRE Agent proves to the SPIRE Server that it is running on a legitimate node. This happens once when the agent first connects to the server.
+
+    The server and agent use a **node attestor** plugin on both sides to carry out the attestation. For example:
+
+    - **join_token** — the server generates a one-time token; the agent presents it. Suitable for bootstrapping and testing.
+    - **aws_iid** — the agent presents an AWS Instance Identity Document signed by AWS. The server verifies it against the AWS API.
+    - **k8s_psat** — the agent presents a Kubernetes Projected Service Account Token. The server verifies it against the Kubernetes API.
+
+    After successful attestation, the server assigns a SPIFFE ID to the node (e.g., `spiffe://example.org/host`) and issues the agent a node SVID. The agent uses this SVID for all subsequent communication with the server.
+
+    See [Node attestors](/plugins/node-attestors) for the full list of supported plugins.
+  </Accordion>
+
+  <Accordion title="Workload attestation">
+    Workload attestation is the process by which a SPIRE Agent confirms the identity of a process calling the Workload API. It happens every time a workload requests an SVID.
+
+    The agent uses **workload attestor** plugins to interrogate the calling process and collect selectors — observable properties of the workload such as its Unix UID, its Kubernetes pod labels, or its Docker image name.
+
+    The agent then checks those selectors against registration entries stored by the server. If a matching entry is found, the agent issues the SVID for the corresponding SPIFFE ID.
+
+    See [Workload attestors](/plugins/workload-attestors) for the full list of supported plugins.
+  </Accordion>
+
+  <Accordion title="Registration entries">
+    A registration entry is a record in the SPIRE Server that defines which workloads should receive a given SPIFFE ID. Each entry specifies:
+
+    - **SPIFFE ID** — the identity to be issued (e.g., `spiffe://example.org/frontend`)
+    - **Parent ID** — the SPIFFE ID of the node or workload that can request this identity
+    - **Selectors** — one or more workload properties that must match for the SVID to be issued
+
+    Entries are created using `spire-server entry create` or through the [Server API](/reference/server-api). They can be scoped to a specific node, a set of nodes, or nested to represent hierarchical workload identity.
+
+    Example entry creation:
+
+    ```bash
+    ./bin/spire-server entry create \
+      -parentID spiffe://example.org/host \
+      -spiffeID spiffe://example.org/frontend \
+      -selector unix:uid:1001
+    ```
+  </Accordion>
+
+  <Accordion title="Selectors">
+    Selectors are key-value pairs that describe observable properties of a workload or node. They are the matching criteria in a registration entry.
+
+    A selector has the form `type:key:value`, for example:
+
+    | Selector | Meaning |
+    |---|---|
+    | `unix:uid:1001` | Process running as Unix UID 1001 |
+    | `unix:user:nginx` | Process running as the `nginx` user |
+    | `k8s:pod-label:app:frontend` | Kubernetes pod with label `app=frontend` |
+    | `docker:image:nginx:1.25` | Container running the `nginx:1.25` Docker image |
+
+    Multiple selectors in a single entry form an AND condition — all must match. To express OR logic, create separate entries pointing to the same SPIFFE ID.
+
+    Selectors are collected by [workload attestor](/plugins/workload-attestors) plugins on the agent side and by [node attestor](/plugins/node-attestors) plugins during node attestation.
+  </Accordion>
+
+  <Accordion title="Workload API">
+    The Workload API is the gRPC interface that workloads use to fetch their SVIDs and trust bundles. The SPIRE Agent exposes it over a Unix domain socket (by default at `/tmp/spire-agent/public/api.sock`).
+
+    Workloads call the Workload API to:
+
+    - Fetch their X.509-SVID and private key
+    - Fetch JWT-SVIDs for a specified audience
+    - Receive the trust bundle for their trust domain (and federated domains)
+
+    The API streams updates, so workloads can subscribe to credential renewals without polling. Official client libraries are available for [Go](https://github.com/spiffe/go-spiffe) and [Java](https://github.com/spiffe/java-spiffe). The `spire-agent api fetch` command provides a CLI interface for testing.
+
+    See the [Workload API reference](/reference/workload-api) for the full interface definition.
+  </Accordion>
+
+</AccordionGroup>
+
+## Putting it together
+
+A workload gets its identity through this sequence:
+
+1. The SPIRE Agent attests the node to the server (node attestation).
+2. An operator creates a registration entry mapping a workload's selectors to a SPIFFE ID.
+3. The workload calls the Workload API socket.
+4. The agent interrogates the process (workload attestation) and matches its selectors to the registration entry.
+5. The agent requests an SVID from the server and returns it — along with the trust bundle — to the workload.
+6. Two workloads can now verify each other using their SVIDs and the shared trust bundle.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    See these concepts in action with a working local example.
+  </Card>
+  <Card title="Node attestors" icon="shield" href="/plugins/node-attestors">
+    Explore the attestation plugins available for different platforms.
+  </Card>
+  <Card title="Workload attestors" icon="fingerprint" href="/plugins/workload-attestors">
+    See how workloads are identified on Linux, Kubernetes, and Docker.
+  </Card>
+  <Card title="Federation" icon="link" href="/configuration/federation">
+    Connect trust domains so workloads across clusters can authenticate each other.
+  </Card>
+</CardGroup>

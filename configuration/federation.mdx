@@ -1,0 +1,447 @@
+---
+title: 'Federation'
+description: 'How to configure SPIFFE federation between SPIRE deployments, including bundle endpoint profiles, static and dynamic relationships, and the federation CLI commands.'
+keywords: ['spire', 'federation', 'spiffe', 'bundle endpoint', 'trust domain', 'https_web', 'https_spiffe']
+---
+
+SPIFFE federation allows workloads in one trust domain to securely authenticate workloads in a foreign trust domain. SPIRE implements federation through **SPIFFE bundle endpoints** — HTTPS resources that serve a copy of a trust bundle for a given trust domain.
+
+SPIRE supports two ways to configure federation relationships:
+
+- **Static relationships** — defined in the SPIRE Server configuration file. Static relationships override any dynamic relationships with the same trust domain.
+- **Dynamic relationships** — created and managed at runtime via the `spire-server federation` CLI commands or the Trust Domain API. Not reflected in the config file.
+
+## How federation works
+
+Each SPIRE Server can:
+
+1. **Expose a bundle endpoint** — serve its own trust bundle over HTTPS so that foreign trust domains can fetch it.
+2. **Federate with foreign trust domains** — periodically fetch and cache the trust bundle from another SPIRE Server's bundle endpoint.
+
+When a workload presents an SVID issued by a foreign trust domain, the local SPIRE Agent uses the cached foreign bundle to validate it.
+
+## Static federation configuration
+
+Static federation is configured inside the `federation { ... }` block within the top-level `server { ... }` block.
+
+```hcl
+server {
+    federation {
+        bundle_endpoint {
+            address      = "0.0.0.0"
+            port         = 8443
+            refresh_hint = "10m"
+            profile "https_web" {
+                acme {
+                    domain_name  = "example.org"
+                    email        = "mail@example.org"
+                    tos_accepted = true
+                }
+            }
+        }
+        federates_with "domain1.test" {
+            bundle_endpoint_url             = "https://1.2.3.4:8443"
+            bundle_endpoint_profile "https_web" {}
+        }
+        federates_with "domain2.test" {
+            bundle_endpoint_url             = "https://5.6.7.8:8443"
+            bundle_endpoint_profile "https_spiffe" {
+                endpoint_spiffe_id = "spiffe://domain2.test/beserver"
+            }
+        }
+    }
+}
+```
+
+<Note>
+The `federation.bundle_endpoint` section is optional. Configure it only if this SPIRE Server should expose its trust bundle to other trust domains.
+</Note>
+
+## `federation.bundle_endpoint` options
+
+This section configures the bundle endpoint server. It is optional — omit it if this SPIRE Server does not need to expose a bundle endpoint.
+
+| Option | Description | Default |
+|---|---|---|
+| `address` | IP address this server will listen on for bundle endpoint HTTP requests. | — |
+| `port` | TCP port number for bundle endpoint HTTP requests. | — |
+| `refresh_hint` | Suggested refresh interval for consumers of this bundle. Small values deliver trust bundle updates more quickly. | `5m` |
+| `profile` | Bundle endpoint profile. Required. Either `https_web` or `https_spiffe`. See [Bundle endpoint profiles](#bundle-endpoint-profiles). | — |
+
+## Bundle endpoint profiles
+
+A bundle endpoint profile determines how the endpoint is authenticated by consumers. Two profiles are supported.
+
+<Tabs>
+  <Tab title="https_web">
+    The `https_web` profile authenticates using a standard web PKI certificate (e.g., from Let's Encrypt via ACME, or from a certificate file on disk). Consumers verify the endpoint using the system trust store.
+
+    This profile supports two sub-configurations: `acme` (automatic certificate management) and `serving_cert_file` (manual certificate files).
+
+    **ACME**
+
+    ```hcl
+    profile "https_web" {
+        acme {
+            domain_name  = "spire.example.org"
+            email        = "admin@example.org"
+            tos_accepted = true
+        }
+    }
+    ```
+
+    | Option | Description | Default |
+    |---|---|---|
+    | `directory_url` | ACME directory endpoint URL. | `https://acme-v02.api.letsencrypt.org/directory` |
+    | `domain_name` | Domain for which the certificate manager retrieves certificates. | — |
+    | `email` | Contact email address. Used by the CA to notify about certificate issues. | — |
+    | `tos_accepted` | Acceptance of the ACME Terms of Service. Certificate retrieval will fail if the provider requires acceptance and this is `false`. | `false` |
+
+    **Serving cert file**
+
+    ```hcl
+    profile "https_web" {
+        serving_cert_file {
+            cert_file_path      = "/etc/spire/bundle-endpoint.pem"
+            key_file_path       = "/etc/spire/bundle-endpoint-key.pem"
+            file_sync_interval  = "1h"
+        }
+    }
+    ```
+
+    | Option | Description | Default |
+    |---|---|---|
+    | `cert_file_path` | Path to the certificate file in PEM format. | — |
+    | `key_file_path` | Path to the private key file in PEM format. | — |
+    | `file_sync_interval` | Interval at which to reload the certificate and key files from disk. | `1h` |
+  </Tab>
+  <Tab title="https_spiffe">
+    The `https_spiffe` profile authenticates using a SPIFFE identity. Consumers use the SPIFFE bundle for the endpoint's trust domain to verify its X.509-SVID.
+
+    This is the default bundle endpoint profile. No additional configuration is required when using `https_spiffe` as the serving profile.
+
+    ```hcl
+    profile "https_spiffe" {}
+    ```
+
+    When configuring a `federates_with` entry that uses `https_spiffe`, you must specify the expected SPIFFE ID of the remote bundle endpoint server:
+
+    ```hcl
+    federates_with "domain2.test" {
+        bundle_endpoint_url = "https://5.6.7.8:8443"
+        bundle_endpoint_profile "https_spiffe" {
+            endpoint_spiffe_id = "spiffe://domain2.test/beserver"
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## `federation.federates_with` options
+
+Each `federates_with` block configures a federation relationship with one foreign trust domain. SPIRE Server will periodically fetch the trust bundle from that domain's bundle endpoint.
+
+```hcl
+federates_with "<trust-domain-name>" {
+    bundle_endpoint_url = "https://<host>:<port>"
+    bundle_endpoint_profile "<https_web|https_spiffe>" {
+        # profile-specific options
+    }
+}
+```
+
+| Option | Description |
+|---|---|
+| `bundle_endpoint_url` | URL of the SPIFFE bundle endpoint for the foreign trust domain. Must use `https://`. |
+| `bundle_endpoint_profile` | Profile type used to authenticate the remote endpoint: `https_web` or `https_spiffe`. |
+
+For `https_spiffe` profiles, the `endpoint_spiffe_id` setting is required:
+
+| Option | Description |
+|---|---|
+| `endpoint_spiffe_id` | Expected SPIFFE ID of the remote bundle endpoint server. Only used with the `https_spiffe` profile. |
+
+For more details on security considerations, refer to the [SPIFFE Federation standard](https://github.com/spiffe/spiffe/blob/main/standards/SPIFFE_Federation.md).
+
+## Setting up federation between two SPIRE deployments
+
+The following steps show how to establish a mutual federation relationship between two SPIRE Servers — `trust-domain-a.example` and `trust-domain-b.example`.
+
+<Steps>
+  <Step title="Configure the bundle endpoint on server A">
+    In server A's `server.conf`, add a `federation.bundle_endpoint` block:
+
+    ```hcl
+    server {
+        trust_domain = "trust-domain-a.example"
+
+        federation {
+            bundle_endpoint {
+                address      = "0.0.0.0"
+                port         = 8443
+                refresh_hint = "5m"
+                profile "https_spiffe" {}
+            }
+        }
+    }
+    ```
+
+    Server A will now serve its trust bundle at `https://<server-a-host>:8443`.
+  </Step>
+  <Step title="Configure the bundle endpoint on server B">
+    Repeat the same configuration on server B:
+
+    ```hcl
+    server {
+        trust_domain = "trust-domain-b.example"
+
+        federation {
+            bundle_endpoint {
+                address      = "0.0.0.0"
+                port         = 8443
+                refresh_hint = "5m"
+                profile "https_spiffe" {}
+            }
+        }
+    }
+    ```
+  </Step>
+  <Step title="Add federation relationships">
+    Configure each server to fetch the other's bundle.
+
+    On server A, add a `federates_with` block pointing to server B:
+
+    ```hcl
+    server {
+        trust_domain = "trust-domain-a.example"
+
+        federation {
+            bundle_endpoint {
+                address = "0.0.0.0"
+                port    = 8443
+                profile "https_spiffe" {}
+            }
+            federates_with "trust-domain-b.example" {
+                bundle_endpoint_url = "https://<server-b-host>:8443"
+                bundle_endpoint_profile "https_spiffe" {
+                    endpoint_spiffe_id = "spiffe://trust-domain-b.example/spire/server"
+                }
+            }
+        }
+    }
+    ```
+
+    On server B, add a `federates_with` block pointing to server A:
+
+    ```hcl
+    server {
+        trust_domain = "trust-domain-b.example"
+
+        federation {
+            bundle_endpoint {
+                address = "0.0.0.0"
+                port    = 8443
+                profile "https_spiffe" {}
+            }
+            federates_with "trust-domain-a.example" {
+                bundle_endpoint_url = "https://<server-a-host>:8443"
+                bundle_endpoint_profile "https_spiffe" {
+                    endpoint_spiffe_id = "spiffe://trust-domain-a.example/spire/server"
+                }
+            }
+        }
+    }
+    ```
+  </Step>
+  <Step title="Seed the initial bundle">
+    For the initial `https_spiffe` bootstrap, each server needs to have the other's trust bundle pre-populated before the servers can authenticate each other's bundle endpoint.
+
+    Use `spire-server bundle set` to manually import the foreign bundle:
+
+    ```bash
+    # On server A: import server B's bundle
+    spire-server bundle set \
+        -id spiffe://trust-domain-b.example \
+        -path /path/to/server-b-bundle.pem
+
+    # On server B: import server A's bundle
+    spire-server bundle set \
+        -id spiffe://trust-domain-a.example \
+        -path /path/to/server-a-bundle.pem
+    ```
+
+    After the initial seed, SPIRE will keep the bundles up to date automatically.
+  </Step>
+  <Step title="Create registration entries that federate">
+    For workloads that need to authenticate with the foreign trust domain, create registration entries with the `-federatesWith` flag:
+
+    ```bash
+    spire-server entry create \
+        -spiffeID spiffe://trust-domain-a.example/my-service \
+        -parentID spiffe://trust-domain-a.example/spire/agent/join_token/... \
+        -selector unix:uid:1000 \
+        -federatesWith spiffe://trust-domain-b.example
+    ```
+
+    Workloads matching this entry will receive an X.509-SVID that includes both trust domain bundles, enabling mTLS with workloads in `trust-domain-b.example`.
+  </Step>
+</Steps>
+
+## Dynamic federation with `spire-server federation`
+
+Dynamic federation relationships can be managed at runtime without modifying the configuration file. Dynamic relationships are not reflected in the `federation` section of the config file, and static relationships defined in the config file take precedence over dynamic ones.
+
+### `spire-server federation create`
+
+Creates a new dynamic federation relationship with a foreign trust domain.
+
+```bash
+spire-server federation create \
+    -trustDomain "domain2.test" \
+    -bundleEndpointURL "https://5.6.7.8:8443" \
+    -bundleEndpointProfile "https_spiffe" \
+    -endpointSpiffeID "spiffe://domain2.test/beserver"
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-bundleEndpointProfile` | Endpoint profile type: `https_web` or `https_spiffe`. | — |
+| `-bundleEndpointURL` | URL of the SPIFFE bundle endpoint. Must use `https://`. | — |
+| `-data` | Path to a JSON file containing federation relationships (optional). If `-`, reads from stdin. Mutually exclusive with the other relationship flags. | — |
+| `-endpointSpiffeID` | SPIFFE ID of the bundle endpoint server. Only used with `https_spiffe`. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+| `-trustDomain` | Name of the trust domain to federate with (e.g., `example.org`). | — |
+| `-trustDomainBundleFormat` | Format of optional seed bundle data: `pem` or `spiffe`. | `pem` |
+| `-trustDomainBundlePath` | Path to optional seed bundle data. | — |
+
+### `spire-server federation list`
+
+Lists all dynamic federation relationships.
+
+```bash
+spire-server federation list
+spire-server federation list -id spiffe://domain2.test
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | Filter by trust domain SPIFFE ID. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+### `spire-server federation show`
+
+Shows details for a specific dynamic federation relationship.
+
+```bash
+spire-server federation show -trustDomain "domain2.test"
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+| `-trustDomain` | Trust domain name to show (e.g., `example.org`). | — |
+
+### `spire-server federation refresh`
+
+Forces an immediate bundle refresh from a federated trust domain.
+
+```bash
+spire-server federation refresh -id spiffe://domain2.test
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | SPIFFE ID of the trust domain. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+### `spire-server federation update`
+
+Updates an existing dynamic federation relationship.
+
+| Flag | Description | Default |
+|---|---|---|
+| `-bundleEndpointProfile` | Endpoint profile type: `https_web` or `https_spiffe`. | — |
+| `-bundleEndpointURL` | URL of the SPIFFE bundle endpoint. Must use `https://`. | — |
+| `-data` | Path to a JSON file with federation relationship data. Mutually exclusive with other flags. | — |
+| `-endpointSpiffeID` | SPIFFE ID of the bundle endpoint server. Only used with `https_spiffe`. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+| `-trustDomain` | Name of the trust domain to update. | — |
+| `-trustDomainBundleFormat` | Format of optional bundle data: `pem` or `spiffe`. | `pem` |
+| `-trustDomainBundlePath` | Path to optional bundle data. | — |
+
+### `spire-server federation delete`
+
+Removes a dynamic federation relationship.
+
+```bash
+spire-server federation delete -id spiffe://domain2.test
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | SPIFFE ID of the trust domain to remove. | — |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+## Bundle management commands
+
+These commands manage trust bundles directly, independent of federation relationships.
+
+### `spire-server bundle show`
+
+Displays the trust bundle for this server's trust domain.
+
+```bash
+spire-server bundle show
+spire-server bundle show -format spiffe
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-format` | Output format: `pem` or `spiffe`. | `pem` |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+### `spire-server bundle list`
+
+Lists all federated trust bundles.
+
+```bash
+spire-server bundle list
+spire-server bundle list -id spiffe://domain2.test
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | Trust domain SPIFFE ID to show. If unset, all bundles are shown. | — |
+| `-format` | Output format: `pem` or `spiffe`. | `pem` |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+### `spire-server bundle set`
+
+Creates or updates bundle data for a foreign trust domain. Cannot be used to modify the server's own trust domain bundle.
+
+```bash
+spire-server bundle set \
+    -id spiffe://domain2.test \
+    -path /path/to/bundle.pem
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | Trust domain SPIFFE ID. | — |
+| `-path` | Path to the bundle file. Reads from stdin if unset. | — |
+| `-format` | Bundle format: `pem` or `spiffe`. | `pem` |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |
+
+### `spire-server bundle delete`
+
+Deletes bundle data for a foreign trust domain.
+
+```bash
+spire-server bundle delete -id spiffe://domain2.test -mode dissociate
+```
+
+| Flag | Description | Default |
+|---|---|---|
+| `-id` | Trust domain SPIFFE ID to delete. | — |
+| `-mode` | Deletion mode: `restrict` (prevents deletion if associated with entries), `dissociate` (deletes bundle and removes associations), or `delete` (deletes bundle and all associated entries). | `restrict` |
+| `-socketPath` | Path to the SPIRE Server API socket. | `/tmp/spire-server/private/api.sock` |

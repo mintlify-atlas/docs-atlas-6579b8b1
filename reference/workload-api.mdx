@@ -1,0 +1,251 @@
+---
+title: "SPIFFE Workload API"
+description: "Reference for the SPIFFE Workload API — the gRPC interface workloads use to obtain SVIDs and trust bundles from SPIRE Agent."
+---
+
+The **SPIFFE Workload API** is a gRPC interface served by the SPIRE Agent over a Unix domain socket. Workloads call this API to obtain X.509-SVIDs, JWT-SVIDs, and trust bundles without any knowledge of the underlying PKI or SPIRE configuration.
+
+The API is defined in the [go-spiffe](https://github.com/spiffe/go-spiffe) library and implemented by the SPIRE Agent's workload handler.
+
+---
+
+## Socket path
+
+| Platform | Default socket path |
+|----------|-------------------|
+| Linux / macOS | `/tmp/spire-agent/public/api.sock` |
+| Windows (named pipe) | `\\spire-agent\public\api` |
+
+The socket path is configured via the `socket_path` option in the agent configuration file:
+
+```hcl
+agent {
+    socket_path = "/tmp/spire-agent/public/api.sock"
+}
+```
+
+### `SPIFFE_ENDPOINT_SOCKET` environment variable
+
+Client libraries (including go-spiffe) discover the socket path from the `SPIFFE_ENDPOINT_SOCKET` environment variable. If the variable is not set, clients fall back to the default socket path.
+
+```bash
+export SPIFFE_ENDPOINT_SOCKET="unix:///tmp/spire-agent/public/api.sock"
+```
+
+<Note>
+  Workloads must have filesystem access to the socket. In Kubernetes, this typically means mounting the socket path via a `hostPath` volume. The socket is world-readable but the agent performs workload attestation on every connection using the caller's OS identity (UID, GID, PID, Kubernetes pod metadata, etc.).
+</Note>
+
+---
+
+## RPC methods
+
+The Workload API is defined as `SpiffeWorkloadAPI` in the go-spiffe protobuf schema. All RPCs require the gRPC metadata header `workload.spiffe.io: true`.
+
+<AccordionGroup>
+  <Accordion title="FetchX509SVID (server-streaming)">
+    Returns the set of X.509-SVIDs the calling workload is entitled to, based on its attested selectors. The stream remains open and pushes a new response whenever the SVID set changes (e.g., on rotation or entry update).
+
+    **Request:** `X509SVIDRequest` (empty)
+
+    **Response stream:** `X509SVIDResponse`
+
+    | Response field | Description |
+    |----------------|-------------|
+    | `svids` | List of `X509SVID` messages, each containing a SPIFFE ID, DER-encoded certificate chain, DER-encoded private key, DER-encoded trust bundle, and an optional hint |
+    | `federated_bundles` | Map of trust-domain-ID → DER-encoded CA certificates for federated trust domains |
+
+    Each `X509SVID` in the response includes:
+
+    | Field | Description |
+    |-------|-------------|
+    | `spiffe_id` | The SPIFFE ID of this SVID |
+    | `x509_svid` | DER-encoded X.509 certificate chain (leaf + intermediates) |
+    | `x509_svid_key` | DER-encoded PKCS8 private key |
+    | `bundle` | DER-encoded trust bundle for the SVID's trust domain |
+    | `hint` | Optional hint string for disambiguation |
+
+    ```bash
+    # Test using the CLI client
+    spire-agent api fetch x509
+    ```
+  </Accordion>
+
+  <Accordion title="FetchX509Bundles (server-streaming)">
+    Returns the current trust bundles (CA certificates) for the workload's trust domain and any federated trust domains. The stream remains open and pushes updates when bundles change.
+
+    **Request:** `X509BundlesRequest` (empty)
+
+    **Response stream:** `X509BundlesResponse`
+
+    | Response field | Description |
+    |----------------|-------------|
+    | `bundles` | Map of trust-domain-ID → DER-encoded CA certificate set |
+
+    This RPC is used by workloads that only need the trust bundle (e.g., to verify peer certificates) without needing their own SVID.
+  </Accordion>
+
+  <Accordion title="FetchJWTSVID (unary)">
+    Returns a JWT-SVID for the calling workload with the specified audience claim. Unlike `FetchX509SVID`, this is a unary (non-streaming) RPC.
+
+    **Request:** `JWTSVIDRequest`
+
+    | Request field | Description |
+    |---------------|-------------|
+    | `audience` | List of audience strings for the `aud` claim (required) |
+    | `spiffe_id` | Optional SPIFFE ID to request a specific SVID |
+
+    **Response:** `JWTSVIDResponse`
+
+    | Response field | Description |
+    |----------------|-------------|
+    | `svids` | List of `JWTSVID` messages, each containing a SPIFFE ID and a signed JWT token string |
+
+    ```bash
+    # Test using the CLI client
+    spire-agent api fetch jwt -audience myaudience
+    ```
+  </Accordion>
+
+  <Accordion title="FetchJWTBundles (server-streaming)">
+    Returns JWKS (JSON Web Key Sets) for verifying JWT-SVIDs from the workload's trust domain and federated trust domains. The stream remains open and pushes updates when bundles change.
+
+    **Request:** `JWTBundlesRequest` (empty)
+
+    **Response stream:** `JWTBundlesResponse`
+
+    | Response field | Description |
+    |----------------|-------------|
+    | `bundles` | Map of trust-domain-ID → JSON-encoded JWKS |
+  </Accordion>
+
+  <Accordion title="ValidateJWTSVID (unary)">
+    Validates a JWT-SVID token string against the workload's trust bundles. Returns the SPIFFE ID and decoded claims on success, or a gRPC `INVALID_ARGUMENT` error if the token is invalid.
+
+    **Request:** `ValidateJWTSVIDRequest`
+
+    | Request field | Description |
+    |---------------|-------------|
+    | `audience` | The expected audience value for validation (required) |
+    | `svid` | The JWT token string to validate (required) |
+
+    **Response:** `ValidateJWTSVIDResponse`
+
+    | Response field | Description |
+    |----------------|-------------|
+    | `spiffe_id` | The SPIFFE ID extracted from the validated token |
+    | `claims` | A `google.protobuf.Struct` containing the decoded JWT claims |
+
+    ```bash
+    # Test using the CLI client
+    spire-agent api validate jwt \
+      -audience myaudience \
+      -svid <jwt-token>
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Using the go-spiffe library
+
+The [go-spiffe](https://github.com/spiffe/go-spiffe) library is the recommended way for Go workloads to consume the Workload API. It handles connection management, automatic SVID rotation, and provides idiomatic Go types.
+
+### Fetching X.509-SVIDs
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    "github.com/spiffe/go-spiffe/v2/spiffeid"
+    "github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
+    "github.com/spiffe/go-spiffe/v2/workloadapi"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Connect to the Workload API. Socket path is read from
+    // SPIFFE_ENDPOINT_SOCKET or defaults to the platform default.
+    client, err := workloadapi.New(ctx)
+    if err != nil {
+        log.Fatalf("unable to create workload API client: %v", err)
+    }
+    defer client.Close()
+
+    // Fetch the current X.509-SVID
+    svid, err := client.FetchX509SVID(ctx)
+    if err != nil {
+        log.Fatalf("unable to fetch X.509 SVID: %v", err)
+    }
+
+    log.Printf("SPIFFE ID: %s", svid.ID)
+    log.Printf("Expires at: %s", svid.Certificates[0].NotAfter)
+}
+```
+
+### Watching for SVID updates
+
+```go
+// Watch for X.509-SVID updates (runs until ctx is cancelled)
+err = client.WatchX509Context(ctx, &workloadapi.X509ContextWatcher{
+    OnX509ContextUpdate: func(c *workloadapi.X509Context) {
+        for _, svid := range c.SVIDs {
+            log.Printf("Updated SVID: %s (expires %s)",
+                svid.ID, svid.Certificates[0].NotAfter)
+        }
+    },
+    OnX509ContextWatchError: func(err error) {
+        log.Printf("Watch error: %v", err)
+    },
+})
+```
+
+### Fetching a JWT-SVID
+
+```go
+// Fetch a JWT-SVID for a given audience
+jwtSVID, err := client.FetchJWTSVID(ctx, workloadapi.JWTSVIDParams{
+    Audience: "my-audience",
+})
+if err != nil {
+    log.Fatalf("unable to fetch JWT-SVID: %v", err)
+}
+log.Printf("JWT token: %s", jwtSVID.Marshal())
+```
+
+---
+
+## Testing with the CLI
+
+The `spire-agent api` subcommands provide a quick way to verify Workload API access without writing code:
+
+```bash
+# Verify the agent is reachable and the workload is attested
+spire-agent api fetch x509
+
+# Fetch a JWT-SVID for a specific audience
+spire-agent api fetch jwt -audience my-service
+
+# Validate a JWT-SVID
+spire-agent api validate jwt -audience my-service -svid <token>
+
+# Stream X.509-SVID updates (runs until Ctrl+C)
+spire-agent api watch
+```
+
+<Note>
+  These CLI commands run as regular processes and are themselves subject to workload attestation. They will only succeed if the calling process matches a registration entry. In development environments, a `unix:uid:0` or `unix:uid:<your-uid>` selector is commonly used.
+</Note>
+
+---
+
+## Envoy SDS support
+
+The SPIRE Agent also serves the [Envoy Secret Discovery Service (SDS)](https://www.envoyproxy.io/docs/envoy/latest/configuration/security/secret) over the same Unix domain socket. Envoy processes are attested as workloads.
+
+- X.509-SVIDs are served as `tlsv3.TlsCertificate` resources using the workload SPIFFE ID as the resource name (e.g. `spiffe://example.org/myservice`). Use the resource name `default` for the default workload SVID.
+- Trust bundles are served as `tlsv3.CertificateValidationContext` resources using the trust domain SPIFFE ID (e.g. `spiffe://example.org`) or the special names `ROOTCA` (local trust domain only) and `ALL` (local + federated).

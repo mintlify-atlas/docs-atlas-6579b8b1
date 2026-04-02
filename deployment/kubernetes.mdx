@@ -1,0 +1,335 @@
+---
+title: "Kubernetes deployment"
+description: "Deploy SPIRE Server as a StatefulSet and SPIRE Agent as a DaemonSet on Kubernetes."
+keywords: ["kubernetes", "k8s", "statefulset", "daemonset", "psat", "rbac", "hostpid", "workload attestation"]
+---
+
+Running SPIRE on Kubernetes is the most common production deployment pattern. The SPIRE Server runs as a **StatefulSet** to preserve its state across restarts, while the SPIRE Agent runs as a **DaemonSet** so every node has a local agent to serve the Workload API.
+
+<Note>
+  There is no official Helm chart or Kustomize manifest for SPIRE. The [SPIFFE Kubernetes quickstart](https://spiffe.io/docs/latest/spire/installing/getting-started-k8s/) provides a tested set of YAML files you can use as a starting point. Additional Kubernetes demos are available in the [spire-tutorials](https://github.com/spiffe/spire-tutorials) repository.
+</Note>
+
+## Architecture overview
+
+```text
+Kubernetes cluster
+├── spire namespace
+│   ├── spire-server (StatefulSet)   ← root CA, registration entries, datastore
+│   └── spire-agent  (DaemonSet)     ← one pod per node, serves Workload API socket
+└── workload pods
+    └── /run/spire/sockets/agent.sock  ← mounted from agent DaemonSet
+```
+
+## Deploying SPIRE Server
+
+The SPIRE Server needs persistent storage for its datastore and a stable network identity across pod restarts. A StatefulSet with a PersistentVolumeClaim satisfies both requirements.
+
+### RBAC
+
+Create a ServiceAccount and the cluster-level RBAC rules the server needs to verify Kubernetes node attestations:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-server
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-server-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-server-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-server-role
+subjects:
+  - kind: ServiceAccount
+    name: spire-server
+    namespace: spire
+```
+
+<Note>
+  The `tokenreviews` permission is required for the `k8s_psat` node attestor so the server can validate the projected service account tokens presented by agents during attestation.
+</Note>
+
+### StatefulSet and Service
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: spire-server
+  namespace: spire
+spec:
+  selector:
+    matchLabels:
+      app: spire-server
+  serviceName: spire-server
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: spire-server
+    spec:
+      serviceAccountName: spire-server
+      containers:
+        - name: spire-server
+          image: ghcr.io/spiffe/spire-server:1.10.0
+          args: ["-config", "/run/spire/config/server.conf"]
+          ports:
+            - containerPort: 8081
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-server
+  volumeClaimTemplates:
+    - metadata:
+        name: spire-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spire-server
+  namespace: spire
+spec:
+  selector:
+    app: spire-server
+  ports:
+    - port: 8081
+      targetPort: 8081
+```
+
+### Server configuration
+
+Mount a ConfigMap with the server configuration. A minimal configuration for Kubernetes using SQLite and the `k8s_psat` node attestor:
+
+```hcl
+server {
+  bind_address = "0.0.0.0"
+  bind_port    = "8081"
+  trust_domain = "example.org"
+  data_dir     = "/run/spire/data"
+  log_level    = "INFO"
+}
+
+plugins {
+  DataStore "sql" {
+    plugin_data {
+      database_type     = "sqlite3"
+      connection_string = "/run/spire/data/datastore.sqlite3"
+    }
+  }
+
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      clusters = {
+        "my-cluster" = {
+          service_account_allowlist = ["spire:spire-agent"]
+        }
+      }
+    }
+  }
+
+  KeyManager "disk" {
+    plugin_data {
+      keys_path = "/run/spire/data/keys.json"
+    }
+  }
+}
+```
+
+<Tip>
+  For production deployments with multiple server replicas, replace SQLite with a shared PostgreSQL or MySQL database. See [Scaling SPIRE](/deployment/scaling) for HA configuration guidance.
+</Tip>
+
+## Deploying SPIRE Agent
+
+The SPIRE Agent runs as a DaemonSet so every node has a local instance. Workloads access the Workload API through a Unix socket shared via a `hostPath` volume.
+
+### RBAC
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spire-agent
+  namespace: spire
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: spire-agent-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "nodes/proxy"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spire-agent-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: spire-agent-role
+subjects:
+  - kind: ServiceAccount
+    name: spire-agent
+    namespace: spire
+```
+
+### DaemonSet
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: spire-agent
+  namespace: spire
+spec:
+  selector:
+    matchLabels:
+      app: spire-agent
+  template:
+    metadata:
+      labels:
+        app: spire-agent
+    spec:
+      hostPID: true
+      serviceAccountName: spire-agent
+      initContainers:
+        - name: init
+          image: ghcr.io/spiffe/spire-agent:1.10.0
+          args: ["-config", "/run/spire/config/agent.conf", "healthcheck", "-shallow"]
+      containers:
+        - name: spire-agent
+          image: ghcr.io/spiffe/spire-agent:1.10.0
+          args: ["-config", "/run/spire/config/agent.conf"]
+          volumeMounts:
+            - name: spire-config
+              mountPath: /run/spire/config
+              readOnly: true
+            - name: spire-data
+              mountPath: /run/spire/data
+            - name: spire-agent-socket
+              mountPath: /run/spire/sockets
+            - name: spire-token
+              mountPath: /var/run/secrets/tokens
+      volumes:
+        - name: spire-config
+          configMap:
+            name: spire-agent
+        - name: spire-data
+          hostPath:
+            path: /run/spire/data
+            type: DirectoryOrCreate
+        - name: spire-agent-socket
+          hostPath:
+            path: /run/spire/sockets
+            type: DirectoryOrCreate
+        - name: spire-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: spire-agent
+                  expirationSeconds: 7200
+                  audience: spire-server
+```
+
+### Agent configuration
+
+```hcl
+agent {
+  data_dir      = "/run/spire/data"
+  log_level     = "INFO"
+  server_address = "spire-server"
+  server_port   = "8081"
+  socket_path   = "/run/spire/sockets/agent.sock"
+  trust_bundle_path = "/run/spire/config/bundle.crt"
+  trust_domain  = "example.org"
+}
+
+plugins {
+  NodeAttestor "k8s_psat" {
+    plugin_data {
+      cluster = "my-cluster"
+      token_path = "/var/run/secrets/tokens/spire-agent"
+    }
+  }
+
+  KeyManager "memory" {
+    plugin_data {}
+  }
+
+  WorkloadAttestor "k8s" {
+    plugin_data {
+      skip_kubelet_verification = true
+    }
+  }
+}
+```
+
+## Key Kubernetes considerations
+
+<AccordionGroup>
+  <Accordion title="hostPID for workload attestation">
+    The agent DaemonSet sets `hostPID: true` so the `unix` and `k8s` workload attestors can inspect the calling process's PID namespace. This is required for the agent to map a workload's socket call back to its pod and verify its selectors.
+
+    If you use the [SPIFFE CSI Driver](https://github.com/spiffe/spiffe-csi) to inject the Workload API socket into workload pods, you can avoid `hostPID` on workloads themselves — but the agent still requires it.
+  </Accordion>
+  <Accordion title="Workload API socket sharing">
+    The agent socket at `/run/spire/sockets/agent.sock` is placed on the host filesystem via a `hostPath` volume. Workload pods mount the same `hostPath` to access the Workload API.
+
+    Alternatively, the [SPIFFE CSI Driver](https://github.com/spiffe/spiffe-csi) can project the socket into workload pods without requiring `hostPath` volumes on those pods.
+  </Accordion>
+  <Accordion title="k8s_psat node attestor">
+    The Kubernetes Projected Service Account Token (PSAT) attestor is the recommended node attestation method for Kubernetes. The agent presents a short-lived projected token that the server validates via the Kubernetes TokenReview API. This avoids the need to distribute long-lived secrets to agents.
+
+    The token must be issued with an audience matching your SPIRE Server — set `audience: spire-server` in the projected volume and `service_account_allowlist` in the server configuration.
+  </Accordion>
+  <Accordion title="Namespace and naming conventions">
+    All SPIRE resources should be placed in a dedicated namespace (e.g., `spire`). RBAC rules for the `k8s_psat` attestor reference the agent's ServiceAccount by namespace and name — keep these consistent between the server configuration and the deployed ServiceAccount.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Scaling SPIRE" icon="chart-line" href="/deployment/scaling">
+    Add more server replicas, nested topologies, and HA datastores.
+  </Card>
+  <Card title="Node attestors" icon="fingerprint" href="/plugins/node-attestors">
+    Learn about all available node attestation plugins including k8s_psat.
+  </Card>
+  <Card title="Workload attestors" icon="magnifying-glass" href="/plugins/workload-attestors">
+    Configure the Kubernetes workload attestor to select workloads by pod labels.
+  </Card>
+  <Card title="Managing upgrades" icon="arrow-up-right-dots" href="/deployment/upgrading">
+    Follow the rolling upgrade procedure when updating SPIRE versions.
+  </Card>
+</CardGroup>

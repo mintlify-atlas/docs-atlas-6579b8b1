@@ -1,0 +1,93 @@
+---
+title: "Integrations"
+description: "Supported integrations for SPIRE, including Envoy SDS, Kubernetes, OIDC Discovery Provider, and client libraries."
+keywords: ["integrations", "envoy", "sds", "kubernetes", "oidc", "go-spiffe", "java-spiffe", "client library"]
+---
+
+SPIRE Server and Agent integrate with a range of platforms and tools. This page covers the officially tested integrations and the client libraries available for building SPIFFE-aware applications.
+
+<Note>
+  If an integration is not listed here, that does not mean it is unsupported—only that the SPIRE project has no official stance on it. The SPIFFE ecosystem is broad, and many community integrations exist.
+</Note>
+
+## Key integration targets
+
+<CardGroup cols={2}>
+  <Card title="Envoy Proxy" icon="shield">
+    SPIRE implements the Envoy Secret Discovery Service (SDS) API, allowing Envoy to automatically fetch and rotate TLS certificates and trust bundles.
+  </Card>
+  <Card title="Kubernetes" icon="server">
+    SPIRE includes first-class Kubernetes support through projected service account token (PSAT) attestation and several Kubernetes-aware plugins.
+  </Card>
+  <Card title="OIDC Discovery Provider" icon="key">
+    A companion service that exposes a standards-compliant OIDC discovery document so JWT-SVIDs can be validated by third-party systems.
+  </Card>
+  <Card title="Client libraries" icon="code">
+    Official Go and Java libraries make it straightforward to consume SPIFFE identities and SVIDs from your application code.
+  </Card>
+</CardGroup>
+
+## Envoy SDS
+
+[Envoy Proxy](https://envoyproxy.io) can delegate certificate management entirely to SPIRE through the [Secret Discovery Service](https://www.envoyproxy.io/docs/envoy/latest/configuration/security/secret) (SDS) API. When this integration is active, Envoy fetches its TLS certificates, private keys, and trust bundles directly from the SPIRE Agent over a local Unix Domain Socket. SPIRE rotates the certificates automatically before they expire, and Envoy picks up the new material without a reload or restart.
+
+This means workloads using Envoy as a sidecar proxy can participate in mTLS connections enforced by SPIRE-issued SVIDs without any changes to the application code itself.
+
+### Supported Envoy versions
+
+The SPIRE project officially tests against the **latest five minor versions of Envoy**, starting with **v1.13** (the earliest build with the v3 Envoy API).
+
+<Note>
+  Envoy v2 API support is deprecated. The SPIRE project only actively tests against **v1.16**, the last Envoy minor version that supports the v2 API. Upgrade to the v3 API to remain on a tested path.
+</Note>
+
+### SDS configuration reference
+
+The SPIRE Agent SDS endpoint is configured under an `sds { ... }` block in the agent configuration. Refer to the agent configuration reference for available options.
+
+## Kubernetes
+
+SPIRE provides native support for Kubernetes through:
+
+- **`k8s_psat` node attestor** — attests agent identity using a Kubernetes Projected Service Account Token, removing the need for a shared join token in most cluster deployments.
+- **`k8s` workload attestor** — generates selectors based on Kubernetes constructs such as namespace (`ns`) and service account (`sa`), allowing fine-grained registration policies.
+- **`k8sbundle` notifier** — automatically publishes the SPIRE trust bundle into a Kubernetes ConfigMap so that other workloads can consume it.
+
+### Supported Kubernetes versions
+
+The SPIRE project currently tests against **Kubernetes 1.18 through 1.21**. Later versions may also work but are not explicitly exercised by integration tests.
+
+## OIDC Discovery Provider
+
+The OIDC Discovery Provider is a companion process (distributed as a separate container image at `ghcr.io/spiffe/oidc-discovery-provider`) that exposes a standards-compliant OIDC discovery document and JSON Web Key Set (JWKS). This allows systems that support OIDC—such as AWS IAM, GCP Workload Identity Federation, and HashiCorp Vault—to validate JWT-SVIDs issued by SPIRE without any SPIFFE-specific integration.
+
+## Client libraries
+
+Use these libraries to consume SPIFFE identities directly from application code via the Workload API.
+
+<CardGroup cols={2}>
+  <Card title="go-spiffe (Go)" icon="golang" href="https://github.com/spiffe/go-spiffe">
+    The official Go library for interacting with the SPIFFE Workload API. Provides helpers for fetching X.509 and JWT SVIDs, watching for updates, and constructing mTLS `tls.Config` values.
+  </Card>
+  <Card title="java-spiffe (Java)" icon="java" href="https://github.com/spiffe/java-spiffe">
+    The official Java library for the SPIFFE Workload API. Supports fetching and rotating SVIDs and integrates with standard Java TLS infrastructure.
+  </Card>
+</CardGroup>
+
+<Tip>
+  The SPIFFE website maintains a [full list of official and community libraries](https://spiffe.io/spire/try/spiffe-library-usage-examples/), including code samples for each.
+</Tip>
+
+## Community integrations
+
+The broader SPIFFE ecosystem includes community-maintained integrations with service meshes, secret stores, and other infrastructure tools. These are not officially tested by the SPIRE project but are actively maintained by their respective communities.
+
+Examples include:
+
+- **Istio** — can be configured to use SPIRE as its external CA through the Kubernetes CSR API.
+- **HashiCorp Vault** — the `vault` upstream authority plugin allows SPIRE to obtain intermediate CA certificates from a Vault PKI secrets engine.
+- **cert-manager** — the `cert-manager` upstream authority plugin allows SPIRE to request intermediate certificates from any cert-manager Issuer.
+- **AWS Private CA** — the `aws_pca` upstream authority plugin integrates with AWS Certificate Manager Private CA.
+- **GCP Certificate Authority Service** — the `gcp_cas` upstream authority plugin integrates with GCP CAS.
+
+See the [plugin documentation](/plugins) for configuration details on each upstream authority and other extension points.
